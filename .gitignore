@@ -40,15 +40,18 @@ ENV/
 
 # FFmpeg (큰 파일이므로 제외)
 backend/ffmpeg/
+backend/ffmpeg.zip
+backend/*.zip
 
 # Whisper 모델 캐시
 backend/.cache/
 ~/.cache/whisper/
 
-# 테스트 파일들
+# 테스트/디버그 파일들
 backend/test_*.py
 backend/debug_*.py
 backend/final_*.py
+backend/check_*.py
 
 # 임시 파일
 *.tmp

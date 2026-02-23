@@ -281,6 +281,9 @@ function App() {
   const [pendingUrl, setPendingUrl] = useState('');
   // pendingUrl: Whisper 확인 모달이 뜬 동안 임시 저장된 요청 URL
 
+  const [checkedSegs, setCheckedSegs] = useState<Set<number>>(new Set());
+  // checkedSegs: 루프 구간 정의용 체크박스; 연속된 인덱스들이 하나의 loopConfig 구간으로 합산됨
+
   // ─── 언어 선택 관련 상태 ────────────────────────────────────────
   interface LangOption { code: string; name: string; label: string; is_generated: boolean; }
   const [availableLangs, setAvailableLangs] = useState<LangOption[]>([]); // 조회된 언어 목록
@@ -551,6 +554,55 @@ function App() {
       window.open(`https://www.youtube.com/watch?v=${videoId}&t=${timeInSeconds}s`, '_blank');
     }
   };
+
+  // ─── 세그먼트 체크박스 ───────────────────────────────────────────
+  /** 체크된 세그먼트 셋에서 연속된 그룹 배열 생성. ex) {1,2,3,7,8} → [[1,2,3],[7,8]] */
+  const findConnectedGroups = (segs: Set<number>): number[][] => {
+    const sorted = Array.from(segs).sort((a, b) => a - b);
+    const groups: number[][] = [];
+    let cur: number[] = [];
+    for (const idx of sorted) {
+      if (cur.length === 0 || idx === cur[cur.length - 1] + 1) {
+        cur.push(idx);
+      } else { groups.push(cur); cur = [idx]; }
+    }
+    if (cur.length > 0) groups.push(cur);
+    return groups;
+  };
+
+  /** 세그먼트 체크박스 토글: 연속 그룹을 찾아 loopConfig 자동 갱신 */
+  const handleSegToggle = (idx: number) => {
+    if (!loopMode) return;
+    const next = new Set(checkedSegs);
+    if (next.has(idx)) { next.delete(idx); } else { next.add(idx); }
+
+    const groups = findConnectedGroups(next);
+    if (groups.length === 0) { setCheckedSegs(new Set()); setLoopConfig(null); return; }
+
+    // 토글된 idx를 포함하는 그룹 우선 → 없으면 인접 앞 그룹 → 첫 그룹
+    const focusGroup =
+      groups.find(g => g.includes(idx)) ??
+      groups.find(g => g[g.length - 1] < idx) ??
+      groups[0];
+
+    setCheckedSegs(next);
+    setLoopConfig({
+      matchIndex: focusGroup[0],
+      startOffset: 0,
+      endOffset: focusGroup[focusGroup.length - 1] - focusGroup[0],
+    });
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  // loopConfig 변경 시 checkedSegs 동기화 (수동 ±, 검색 클릭 등 외부 변경도 반영)
+  useEffect(() => {
+    if (!loopConfig || segments.length === 0) { setCheckedSegs(new Set()); return; }
+    const s = Math.max(0, loopConfig.matchIndex - loopConfig.startOffset);
+    const e = Math.min(segments.length - 1, loopConfig.matchIndex + loopConfig.endOffset);
+    const ns = new Set<number>();
+    for (let i = s; i <= e; i++) ns.add(i);
+    setCheckedSegs(ns);
+  }, [loopConfig, segments]);
 
   // ─── 재생 중 활성 세그먼트 감지 → 자동 스크롤 ─────────────────
   // LoopPlayer의 YT.Player 인스턴스에 직접 접근하기 어려우므로,
@@ -1201,15 +1253,24 @@ function App() {
                           ref={el => { segmentRefs.current[i] = el; }}
                           className={[
                             'transcript-seg',
-                            isActive ? 'active' : '',
-                            isHit    ? 'hit'    : '',
+                            isActive               ? 'active'  : '',
+                            isHit                  ? 'hit'     : '',
+                            checkedSegs.has(i)     ? 'checked' : '',
                           ].join(' ').trim()}
                         >
+                          {/* 체크박스 토글 (구간반복 모드에서만 활성화) */}
+                          {loopMode && (
+                            <button
+                              className={`seg-check${checkedSegs.has(i) ? ' seg-check--on' : ''}`}
+                              onClick={(e) => { e.stopPropagation(); handleSegToggle(i); }}
+                              title={checkedSegs.has(i) ? '구간에서 제외' : '이 세그먼트를 연속 구간에 포함'}
+                            />
+                          )}
                           {/* 타임스탬프 버튼 */}
                           <button
                             className="seg-timestamp"
                             onClick={() => openYouTubeAtTime(i, seg.start)}
-                            title={loopMode ? '클릭 → 구간 반복' : '클릭 → YouTube에서 열기'}
+                            title={loopMode ? '클릭 → 이 세그먼트는자 재생' : '클릭 → YouTube에서 열기'}
                           >
                             {formatTimestamp(seg.start)}
                           </button>

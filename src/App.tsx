@@ -207,8 +207,10 @@ interface Segment {
 
 /** 키워드 검색 결과 단위 */
 interface SearchResult {
-  segment: Segment; // 매칭된 세그먼트 데이터
-  matchIndex: number; // 원본 segments 배열에서의 인덱스 (추후 활용 가능)
+  segment: Segment;      // 매칭된 세그먼트 데이터 (클릭 기준 세그먼트)
+  matchIndex: number;    // 오리진 segments[]에서의 인덱스
+  loopStartIdx: number;  // 슬라이딩 윈듀우 히트가 시작되는 세그먼트 인덱스
+  loopEndIdx: number;    // 슬라이딩 윈듀우 히트가 끝나는 세그먼트 인덱스
 }
 
 
@@ -475,19 +477,50 @@ function App() {
     const addedIndices = new Set<number>();
 
     segments.forEach((segment, index) => {
-      // ── 슬라이딩 윈도우: 이전·현재·다음 세그먼트를 이어붙여 경계 걸친 검색어도 탐지 ──
-      // window size = 3 (prev + current + next). 없는 경우 빈 문자열로 처리.
-      const prev  = segments[index - 1]?.text ?? '';
-      const cur   = segment.text;
-      const next  = segments[index + 1]?.text ?? '';
+      if (addedIndices.has(index)) return;
 
-      // 공백으로 이어붙여 "세그먼트 경계" 검색 가능하게 만듦
-      const combined = [prev, cur, next].join(' ').toLowerCase();
+      const prev = segments[index - 1]?.text ?? '';
+      const cur  = segment.text;
+      const next = segments[index + 1]?.text ?? '';
 
-      if (combined.includes(query) && !addedIndices.has(index)) {
-        results.push({ segment, matchIndex: index });
-        addedIndices.add(index);
+      // 윈도우 파츠: 공백 없는 세그먼트만 포함
+      const parts: { text: string; segIdx: number }[] = [
+        { text: prev, segIdx: index - 1 },
+        { text: cur,  segIdx: index     },
+        { text: next, segIdx: index + 1 },
+      ].filter(p => p.text.length > 0);
+
+      const combined = parts.map(p => p.text).join(' ').toLowerCase();
+      const hitPos   = combined.indexOf(query);
+      if (hitPos === -1) return;
+
+      // 히트 시작/끝 위치가 어느 세그먼트에 속하는지 문자 오프셋으로 계산
+      const hitEnd = hitPos + query.length - 1;
+      let charOffset   = 0;
+      let loopStartIdx = index;
+      let loopEndIdx   = index;
+      let startFound   = false;
+
+      for (const part of parts) {
+        const segEnd     = charOffset + part.text.length - 1;
+        charOffset      += part.text.length + 1; // +1: 세그먼트 사이 공백
+
+        const clamped = Math.max(0, Math.min(segments.length - 1, part.segIdx));
+
+        if (!startFound && hitPos <= segEnd) {
+          loopStartIdx = clamped;
+          startFound   = true;
+        }
+        if (startFound) {
+          loopEndIdx = clamped;
+          if (hitEnd <= segEnd) break; // 히트 끝이 이 세그먼트 안에 있으면 종료
+        }
       }
+
+      // 히트에 포함된 모든 인덱스를 addedIndices에 등록 (중복 방지)
+      for (let si = loopStartIdx; si <= loopEndIdx; si++) addedIndices.add(si);
+
+      results.push({ segment, matchIndex: index, loopStartIdx, loopEndIdx });
     });
 
     setSearchResults(results);
@@ -496,14 +529,22 @@ function App() {
   /**
    * openYouTubeAtTime
    *   - 구간반복 모드 OFF: 해당 시간부터 YouTube를 새 탭에서 열기
-   *   - 구간반복 모드 ON : 즉시 LoopPlayer를 시작하고, 재생 중에 구간을 실시간 조정
+   *   - 구간반복 모드 ON : loopRange가 있으면 해당 범위 전체, 없으면 단일 세그먼트로 반복 시작
    *
-   * @param matchIndex 클릭한 세그먼트의 segments 배열 인덱스
-   * @param startTime  클릭한 세그먼트의 시작 시간 (일반 모드 새 탭 이동에 사용)
+   * @param matchIndex  베이스 세그먼트 인덱스
+   * @param startTime   타임스탬프 미포함 모드의 YouTube 열기 시간
+   * @param loopRange   슬라이딩 윈듀우로 감지한 실제 히트 범위 (startIdx..endIdx)
    */
-  const openYouTubeAtTime = (matchIndex: number, startTime: number) => {
+  const openYouTubeAtTime = (
+    matchIndex: number,
+    startTime:  number,
+    loopRange?: { startIdx: number; endIdx: number },
+  ) => {
     if (loopMode) {
-      setLoopConfig({ matchIndex, startOffset: 0, endOffset: 0 });
+      const base     = loopRange?.startIdx ?? matchIndex;
+      const endIdx   = loopRange?.endIdx   ?? matchIndex;
+      const endOffset = Math.max(0, endIdx - base);
+      setLoopConfig({ matchIndex: base, startOffset: 0, endOffset });
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
       const timeInSeconds = Math.floor(startTime);
@@ -987,8 +1028,17 @@ function App() {
                             initial={{ opacity: 0, x: -6 }}
                             animate={{ opacity: 1, x: 0 }}
                             transition={{ delay: Math.min(idx * 0.03, 0.2) }}
-                            onClick={() => openYouTubeAtTime(result.matchIndex, result.segment.start)}
-                            className={`search-result-item${loopMode && loopConfig?.matchIndex === result.matchIndex ? ' playing' : ''}`}
+                            onClick={() => openYouTubeAtTime(
+                              result.matchIndex,
+                              result.segment.start,
+                              { startIdx: result.loopStartIdx, endIdx: result.loopEndIdx },
+                            )}
+                            className={`search-result-item${
+                              loopMode && loopConfig &&
+                              loopConfig.matchIndex >= result.loopStartIdx &&
+                              loopConfig.matchIndex + loopConfig.endOffset <= result.loopEndIdx
+                                ? ' playing' : ''
+                            }`}
                           >
                             <span className="timestamp-badge">{formatTimestamp(result.segment.start)}</span>
                             <p className="search-result-text">

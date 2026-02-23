@@ -301,6 +301,8 @@ function App() {
   const [selectedLang, setSelectedLang] = useState('');                   // 사용자가 선택한 언어 코드 ('' = 자동)
   const [langLoading, setLangLoading] = useState(false);                  // 언어 목록 로딩 중 여부
   const [langError, setLangError] = useState('');                         // 언어 조회 실패 메시지
+  const [isDragMode, setIsDragMode] = useState(false);                 // 드래그 선택 모드 활성화 여부
+  const [dragStartIdx, setDragStartIdx] = useState<number | null>(null); // 드래그 시작 세그먼트 인덱스
 
 
   // ─── 언어 목록 조회 ────────────────────────────────────────────
@@ -590,14 +592,12 @@ function App() {
 
   /** 세그먼트 체크박스 토글: 연속 그룹을 찾아 loopConfig 자동 갱신 */
   const handleSegToggle = (idx: number) => {
-    if (!loopMode) return;
     const next = new Set(checkedSegs);
     if (next.has(idx)) { next.delete(idx); } else { next.add(idx); }
 
     const groups = findConnectedGroups(next);
     if (groups.length === 0) { setCheckedSegs(new Set()); setLoopConfig(null); return; }
 
-    // 토글된 idx를 포함하는 그룹 우선 → 없으면 인접 앞 그룹 → 첫 그룹
     const focusGroup =
       groups.find(g => g.includes(idx)) ??
       groups.find(g => g[g.length - 1] < idx) ??
@@ -610,6 +610,51 @@ function App() {
       endOffset: focusGroup[focusGroup.length - 1] - focusGroup[0],
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  /** 드래그 선택 이벤트 핸들러 */
+  const handleDragStart = (idx: number) => {
+    if (!isDragMode) return;
+    setDragStartIdx(idx);
+    // 드래그 시작 시 해당 항목 포함/해제 결정은 첫 번째 항목의 현재 상태 반전으로 처리
+    const next = new Set(checkedSegs);
+    if (next.has(idx)) { next.delete(idx); } else { next.add(idx); }
+    setCheckedSegs(next);
+  };
+
+  const handleDragEnter = (idx: number) => {
+    if (!isDragMode || dragStartIdx === null) return;
+    
+    // 시작점부터 현재점까지의 범위를 계산하여 체크 상태 업데이트
+    const next = new Set(checkedSegs);
+    const start = Math.min(dragStartIdx, idx);
+    const end = Math.max(dragStartIdx, idx);
+    
+    // 이 범위 내의 모든 항목을 체크 (시작점의 동작에 맞추는 것이 자연스러움)
+    // 여기서는 단순히 '추가' 모드로 동작하도록 구현 (드래그로 범위를 잡는 일반적인 UX)
+    for (let i = start; i <= end; i++) {
+      next.add(i);
+    }
+    setCheckedSegs(next);
+  };
+
+  const handleDragEnd = () => {
+    if (!isDragMode || dragStartIdx === null) return;
+    setDragStartIdx(null);
+    
+    // 드래그 종료 후 loopConfig 갱신
+    if (checkedSegs.size > 0) {
+      const groups = findConnectedGroups(checkedSegs);
+      if (groups.length > 0) {
+        const lastIdx = Array.from(checkedSegs).sort((a, b) => b - a)[0];
+        const focusGroup = groups.find(g => g.includes(lastIdx)) || groups[0];
+        setLoopConfig({
+          matchIndex: focusGroup[0],
+          startOffset: 0,
+          endOffset: focusGroup[focusGroup.length - 1] - focusGroup[0],
+        });
+      }
+    }
   };
 
   // loopConfig 변경 시 checkedSegs 동기화 (수동 ±, 검색 클릭 등 외부 변경도 반영)
@@ -1313,7 +1358,11 @@ function App() {
               </div>
 
               {/* 자막 — 세그먼트별 렌더링 (하이라이트 + 재생 위치 추적) */}
-              <div className="transcript-scroll">
+              <div 
+                className="transcript-scroll" 
+                onMouseUp={handleDragEnd}
+                onMouseLeave={handleDragEnd}
+              >
                 {segments.length > 0 ? (
                   <div className="transcript-segments">
                     {segments.map((seg, i) => {
@@ -1328,7 +1377,10 @@ function App() {
                             isActive               ? 'active'  : '',
                             isHit                  ? 'hit'     : '',
                             checkedSegs.has(i)     ? 'checked' : '',
+                            isDragMode             ? 'drag-mode' : '',
                           ].join(' ').trim()}
+                          onMouseDown={() => handleDragStart(i)}
+                          onMouseEnter={() => handleDragEnter(i)}
                         >
                           {/* 체크박스 토글 (구간반복 모드에서만 활성화) */}
                           {loopMode && (
@@ -1360,6 +1412,29 @@ function App() {
                 )}
               </div>
 
+              {/* 드래그 모드 설정 바 */}
+              <div className="transcript-footer">
+                <div className="drag-mode-bar" onClick={() => setIsDragMode(v => !v)} style={{ cursor: 'pointer' }}>
+                  <div className="drag-mode-info">
+                    <span className={`drag-mode-icon ${isDragMode ? 'active' : ''}`}>
+                      <svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-2 2-2-2"/><path d="M15 6l-2-2-2 2"/><path d="M18 15l2-2-2-2"/><path d="M6 15l-2-2 2-2"/></svg>
+                    </span>
+                    <div className="drag-mode-texts">
+                      <span className="drag-mode-title">드래그 선택 모드</span>
+                      <span className="drag-mode-desc">마우스로 쓱 긁어서 구간을 지정하세요</span>
+                    </div>
+                  </div>
+                  <div className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={isDragMode}
+                      onChange={(e) => { e.stopPropagation(); setIsDragMode(e.target.checked); }}
+                    />
+                    <div className="toggle-track" />
+                    <div className="toggle-thumb" />
+                  </div>
+                </div>
+              </div>
             </motion.div>
           )}
         </main>

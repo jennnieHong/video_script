@@ -921,6 +921,75 @@ h1, h2, h3, h4 {
   border: 1px solid rgba(245,158,11,0.25);
 }
 
+/* ─── Transcript Footer ──────────────────────────────────── */
+.transcript-footer {
+  padding: 0.75rem 1.25rem;
+  background: var(--surface-0);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.drag-mode-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  transition: all 0.2s;
+}
+
+.drag-mode-info {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.drag-mode-icon {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  border-radius: 8px;
+  color: var(--text-muted);
+  transition: all 0.2s;
+}
+
+.drag-mode-icon.active {
+  background: var(--brand-glow);
+  color: var(--brand-light);
+  box-shadow: 0 0 15px var(--brand-glow);
+}
+
+.drag-mode-texts {
+  display: flex;
+  flex-direction: column;
+}
+
+.drag-mode-title {
+  font-size: 0.825rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.drag-mode-desc {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+/* Drag mode active state for segments */
+.transcript-seg.drag-mode {
+  user-select: none; /* 드래그 모드일 때는 텍스트 선택 방지 */
+  cursor: crosshair;
+}
+
+.transcript-seg.drag-mode .seg-text {
+  pointer-events: none; /* 텍스트 요소가 마우스 이벤트를 방해하지 않도록 */
+}
+
 /* ─── Error / Empty States ───────────────────────────────── */
 .error-banner {
   display: flex;

@@ -50,9 +50,9 @@ npm run dev
 # backend 디렉토리로 이동
 cd backend
 
-# Python 가상 환경 생성
+# 현위치에서 Python 가상 환경(venv 폴더명으로) 생성
 python -m venv venv
-venv\Scripts\activate  # Windows
+venv\Scripts\activate  # Windows. 만들어 둔 venv 폴더로 들어가서 가상환경 활성화
 # source venv/bin/activate  # Mac/Linux
 
 # 의존성 설치 (기본 기능)

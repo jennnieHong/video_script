@@ -1,3 +1,4 @@
+# 라이브러리 임포트. venv 활성화 필수. backend/venv 생성된 가상환경 폴더, 가상환경을 활성화하면 이 폴더 안의 설정을 읽어서 실행됨
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -50,7 +51,7 @@ else:
 
 app = FastAPI()
 
-# Enable CORS for React
+# Enable CORS for React: 프론트엔드(React)에서 백엔드에 접근할 수 있도록 허용하는 설정
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

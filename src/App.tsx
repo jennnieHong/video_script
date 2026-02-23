@@ -239,7 +239,18 @@ function App() {
   // segmentRefs: 각 세그먼트 DOM 요소에 대한 ref 배열 (자동 스크롤용)
   const segmentRefs = useRef<(HTMLDivElement | null)[]>([]);
 
-  const [loopMode, setLoopMode] = useState(true); // 구간반복 모드 ON/OFF (기본값: ON)
+  // interactionMode: 검색 결과 클릭 시 동작 설정 ('search' | 'play')
+  // - 'search': 해당 위치로 스크롤 이동만 함 (기본값)
+  // - 'play': 해당 구간 재생
+  const [interactionMode, setInteractionMode] = useState<'search' | 'play'>('search');
+
+  // playbackOption: 'play' 모드일 때 재생 방식 ('loop' | 'popup')
+  // - 'loop': 앱 내 플레이어로 구간 반복
+  // - 'popup': 새 창에서 해당 시간대 열기
+  const [playbackOption, setPlaybackOption] = useState<'loop' | 'popup'>('loop');
+
+  // loopMode: 기존 boolean 하위 호환 및 UI 상태 관리를 위해 interactionMode === 'play' && playbackOption === 'loop' 인 경우로 계산
+  const loopMode = interactionMode === 'play' && playbackOption === 'loop';
 
   // loopConfig: 구간반복 모드에서 현재 재생 중인 구간 설정
   //   - 클릭 즉시 설정되어 LoopPlayer가 바로 시작됨
@@ -543,15 +554,22 @@ function App() {
     startTime:  number,
     loopRange?: { startIdx: number; endIdx: number },
   ) => {
-    if (loopMode) {
-      const base     = loopRange?.startIdx ?? matchIndex;
-      const endIdx   = loopRange?.endIdx   ?? matchIndex;
-      const endOffset = Math.max(0, endIdx - base);
-      setLoopConfig({ matchIndex: base, startOffset: 0, endOffset });
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (interactionMode === 'play') {
+      if (playbackOption === 'loop') {
+        const base     = loopRange?.startIdx ?? matchIndex;
+        const endIdx   = loopRange?.endIdx   ?? matchIndex;
+        const endOffset = Math.max(0, endIdx - base);
+        setLoopConfig({ matchIndex: base, startOffset: 0, endOffset });
+        // 플레이어가 있는 상단으로 스크롤하지 않고 대본 위치 유지 (사용자 편의)
+      } else {
+        const timeInSeconds = Math.floor(startTime);
+        window.open(`https://www.youtube.com/watch?v=${videoId}&t=${timeInSeconds}s`, '_blank');
+      }
     } else {
-      const timeInSeconds = Math.floor(startTime);
-      window.open(`https://www.youtube.com/watch?v=${videoId}&t=${timeInSeconds}s`, '_blank');
+      // 'search' 모드: 대본 영역에서 해당 위치로 스크롤 이동
+      segmentRefs.current[matchIndex]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // 시각적 피드백을 위해 잠시 강조 (activeSegIdx를 활용하거나 별도 상태 가능)
+      setActiveSegIdx(matchIndex);
     }
   };
 
@@ -987,26 +1005,6 @@ function App() {
                 )}
               </AnimatePresence>
 
-              {/* 구간반복 토글 */}
-              <label className="control-row" style={{ cursor: 'pointer' }}>
-                <span className="control-row-label">
-                  <RotateCcw style={{
-                    width: 14, height: 14,
-                    color: loopMode ? 'var(--brand-light)' : 'var(--text-muted)',
-                    animation: loopMode ? 'spin 2s linear infinite' : 'none'
-                  }} />
-                  구간 반복 모드
-                </span>
-                <div className="toggle">
-                  <input
-                    type="checkbox"
-                    checked={loopMode}
-                    onChange={() => setLoopMode(v => !v)}
-                  />
-                  <div className="toggle-track" />
-                  <div className="toggle-thumb" />
-                </div>
-              </label>
 
               {segments.length > 0 && (
                 <div style={{
@@ -1046,11 +1044,68 @@ function App() {
                   <Search style={{ width: 11, height: 11 }} /> 검색
                 </button>
               </div>
-              {loopMode && searchResults.length > 0 && (
-                <p style={{ margin: 0, fontSize: '0.7rem', color: 'var(--brand-light)' }}>
-                  클릭 시 해당 구간 반복 재생
-                </p>
-              )}
+
+              {/* 클릭 동작 설정 (검색 vs 재생) */}
+              <div className="mode-selector-wrap">
+                <div className="mode-tabs">
+                  <button
+                    className={`mode-tab ${interactionMode === 'search' ? 'active' : ''}`}
+                    onClick={() => setInteractionMode('search')}
+                  >
+                    <Search style={{ width: 12, height: 12 }} /> 검색 모드
+                  </button>
+                  <button
+                    className={`mode-tab ${interactionMode === 'play' ? 'active' : ''}`}
+                    onClick={() => setInteractionMode('play')}
+                  >
+                    <Youtube style={{ width: 12, height: 12 }} /> 재생 모드
+                  </button>
+                </div>
+
+                <AnimatePresence>
+                  {interactionMode === 'play' && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -5 }}
+                      className="playback-options"
+                    >
+                      <label className="play-opt">
+                        <input
+                          type="radio"
+                          name="play-type"
+                          checked={playbackOption === 'loop'}
+                          onChange={() => setPlaybackOption('loop')}
+                        />
+                        <span className="play-opt-box">
+                          <RotateCcw style={{ width: 11, height: 11, animation: 'spin 3s linear infinite' }} /> 반복 재생
+                        </span>
+                      </label>
+                      <label className="play-opt">
+                        <input
+                          type="radio"
+                          name="play-type"
+                          checked={playbackOption === 'popup'}
+                          onChange={() => setPlaybackOption('popup')}
+                        />
+                        <span className="play-opt-box">
+                          <svg style={{ width: 11, height: 11 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                          새 창 팝업
+                        </span>
+                      </label>
+                    </motion.div>
+                  )}
+                  {interactionMode === 'search' && (
+                    <motion.p
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="mode-hint"
+                    >
+                      결과 클릭 시 대본의 해당 위치로 이동합니다.
+                    </motion.p>
+                  )}
+                </AnimatePresence>
+              </div>
 
               {/* 검색 결과 목록 — flex:1 영역 */}
               <div className="search-panel-results">
@@ -1092,10 +1147,27 @@ function App() {
                                 ? ' playing' : ''
                             }`}
                           >
-                            <span className="timestamp-badge">{formatTimestamp(result.segment.start)}</span>
-                            <p className="search-result-text">
-                              {highlightText(result.segment.text, searchQuery)}
-                            </p>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flex: 1, minWidth: 0 }}>
+                              <span className="timestamp-badge">{formatTimestamp(result.segment.start)}</span>
+                              <p className="search-result-text">
+                                {highlightText(result.segment.text, searchQuery)}
+                              </p>
+                            </div>
+                            <button
+                              className="btn-result-loop"
+                              title="이 구간 즉시 반복 재생"
+                              onClick={(e) => {
+                                e.stopPropagation(); // 부모의 onClick(검색 모드 이동) 방지
+                                // 강제로 반복 재생 설정
+                                const base = result.loopStartIdx;
+                                const endOffset = Math.max(0, result.loopEndIdx - base);
+                                setLoopConfig({ matchIndex: base, startOffset: 0, endOffset });
+                                setInteractionMode('play');
+                                setPlaybackOption('loop');
+                              }}
+                            >
+                              <RotateCcw style={{ width: 12, height: 12 }} />
+                            </button>
                           </motion.div>
                         ))}
                       </div>

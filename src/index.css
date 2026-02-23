@@ -587,7 +587,7 @@ h1, h2, h3, h4 {
 
 .search-result-item {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 0.75rem;
   padding: 0.65rem 0.75rem;
   margin: 0 0.375rem;
@@ -601,6 +601,34 @@ h1, h2, h3, h4 {
 .search-result-item:hover {
   background: var(--surface-2);
   border-color: var(--border-strong);
+}
+
+.btn-result-loop {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.2s;
+  flex-shrink: 0;
+}
+
+.btn-result-loop:hover {
+  background: var(--brand-glow);
+  border-color: var(--brand);
+  color: var(--brand-light);
+  transform: scale(1.1);
+}
+
+.search-result-item.playing .btn-result-loop {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: white;
 }
 
 .search-result-item.playing {
@@ -626,6 +654,99 @@ h1, h2, h3, h4 {
   color: var(--text-secondary);
   line-height: 1.5;
   flex: 1;
+}
+
+/* ─── Mode Selector (Search vs Play) ───────────────────── */
+.mode-selector-wrap {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.mode-tabs {
+  display: flex;
+  background: var(--surface-1);
+  padding: 0.25rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-strong);
+}
+
+.mode-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 0.775rem;
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: calc(var(--radius-md) - 4px);
+  transition: all 0.2s;
+}
+
+.mode-tab:hover {
+  color: var(--text-secondary);
+}
+
+.mode-tab.active {
+  background: var(--brand);
+  color: white;
+  box-shadow: var(--shadow-sm);
+}
+
+.playback-options {
+  display: flex;
+  gap: 0.4rem;
+  padding-left: 0.25rem;
+}
+
+.play-opt {
+  cursor: pointer;
+  position: relative;
+}
+
+.play-opt input {
+  position: absolute;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.play-opt-box {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.65rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  transition: all 0.2s;
+}
+
+.play-opt:hover .play-opt-box {
+  border-color: var(--brand-light);
+  color: var(--text-secondary);
+}
+
+.play-opt input:checked + .play-opt-box {
+  background: var(--brand-glow);
+  border-color: var(--brand);
+  color: var(--brand-light);
+}
+
+.mode-hint {
+  margin: 0;
+  padding-left: 0.25rem;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* ─── Hero Section ───────────────────────────────────────── */

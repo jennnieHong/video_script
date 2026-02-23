@@ -69,9 +69,10 @@ body {
 }
 
 #root {
-  min-height: 100vh;
+  height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 h1, h2, h3, h4 {
@@ -84,7 +85,8 @@ h1, h2, h3, h4 {
 .app-shell {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  height: 100vh;        /* 페이지 전체 高를 뷰포트에 고정 */
+  overflow: hidden;     /* 바깥 스크롤 완전 차단 */
 }
 
 /* Top Nav Bar */
@@ -146,7 +148,8 @@ h1, h2, h3, h4 {
   grid-template-columns: 400px 1fr;
   grid-template-rows: 1fr;
   gap: 0;
-  min-height: calc(100vh - 56px);
+  height: calc(100vh - 56px); /* nav 높이 56px 제외, 뷰포트에 딱 맞춤 */
+  overflow: hidden;           /* 그리드 자체는 스크롤 안 함 */
 }
 
 /* Left panel — input & controls */
@@ -154,9 +157,10 @@ h1, h2, h3, h4 {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  padding: 2rem 1.75rem;
-  gap: 1.5rem;
-  overflow-y: auto;
+  padding: 0;           /* 내부 요소가 개별 padding을 가짐 */
+  gap: 0;
+  overflow-y: auto;     /* 좌측 패널 내부만 스크롤 */
+  height: 100%;         /* 부모 grid row 높이에 맞춤 */
   background: var(--surface-0);
 }
 
@@ -164,7 +168,8 @@ h1, h2, h3, h4 {
 .right-panel {
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: hidden;     /* 자식 transcript-scroll 만 스크롤되도록 잠금 */
+  height: 100%;
   background: var(--bg);
 }
 
@@ -178,8 +183,15 @@ h1, h2, h3, h4 {
   margin: 0 auto;
   width: 100%;
   border-right: none;
-  padding: 4rem 2rem 3rem;
+  padding: 4rem 2rem 3rem;  /* hero 상태일 때만 padding 적용 */
   background: transparent;
+  overflow-y: auto;
+}
+
+/* 결과가 있을 때 left-panel 내부 패딩 재정의 */
+.main-content:not(.hero-layout) .left-panel {
+  padding: 2rem 1.75rem;
+  gap: 1.5rem;
 }
 
 /* ─── Input Components ───────────────────────────────────── */
@@ -189,13 +201,18 @@ h1, h2, h3, h4 {
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--text-muted);
-  margin-bottom: 0.5rem;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
 }
 
 .url-input-wrap {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  padding: 1.5rem 1.75rem 0.5rem; /* 패널 안쪽 여백 */
 }
 
 .url-field {
@@ -304,6 +321,11 @@ h1, h2, h3, h4 {
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  padding: 1rem 1.75rem 1rem;
+}
+
+.controls-block > .section-label {
+  margin-bottom: 0.25rem;
 }
 
 .control-row {
@@ -436,8 +458,39 @@ h1, h2, h3, h4 {
 /* ─── Transcript Area ────────────────────────────────────── */
 .transcript-scroll {
   flex: 1;
-  overflow-y: auto;
-  padding: 1.5rem 2rem;
+  overflow-y: scroll;   /* scroll: 항상 스크롤바 표시 → 마우스로 잡기 쉬움 */
+  padding: 1.25rem 0.75rem 1.25rem 1.5rem; /* 우측 여백 줄여 스크롤바 공간 확보 */
+  /* ─ 대본 전용 스크롤바: 넓고 잡기 쉽게 ─ */
+  scrollbar-width: auto;        /* Firefox */
+  scrollbar-color: var(--surface-3) transparent; /* Firefox thumb / track */
+}
+
+/* Chromium 계열: 대본 스크롤바를 넉넉한 너비로 */
+.transcript-scroll::-webkit-scrollbar {
+  width: 30px;
+}
+
+.transcript-scroll::-webkit-scrollbar-track {
+  background: var(--surface-1);          /* 명확한 트랙 배경 — 30px 너비 시각적으로 분명하게 */
+  border-left: 1px solid var(--border);
+}
+
+.transcript-scroll::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 4px;
+  border: 8px solid var(--surface-1);   /* thumb 내부 여백 — 실질 클릭 너비 유지 */
+  background-clip: content-box;
+  min-height: 80px;
+}
+
+.transcript-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(99,102,241,0.5);
+  background-clip: content-box;
+}
+
+.transcript-scroll::-webkit-scrollbar-thumb:active {
+  background: var(--brand);
+  background-clip: content-box;
 }
 
 .transcript-text {
@@ -504,10 +557,29 @@ h1, h2, h3, h4 {
 .btn-search:hover { opacity: 0.85; transform: translateY(-1px); }
 
 /* Search results */
+/* 검색 패널 controls-block이 flex:1 을 가져야 결과 목록이 남은 공간을 채울 수 있음 */
+/* → App.tsx에서 검색 패널 motion.div에 className="controls-block search-panel" 사용 */
+.search-panel {
+  flex: 1;               /* 좌측 패널 남은 공간 전부 차지 */
+  min-height: 0;         /* flex 자식의 overflow 동작을 위해 필수 */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.search-panel-results {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 .search-results-panel {
   flex: 1;
+  min-height: 0;        /* overflow-y: auto가 실제로 작동하려면 필수 */
   overflow-y: auto;
-  padding: 0.75rem 1rem;
+  padding: 0.5rem 0;
   display: flex;
   flex-direction: column;
   gap: 0.375rem;
@@ -517,7 +589,8 @@ h1, h2, h3, h4 {
   display: flex;
   align-items: flex-start;
   gap: 0.75rem;
-  padding: 0.75rem 0.875rem;
+  padding: 0.65rem 0.75rem;
+  margin: 0 0.375rem;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: var(--surface-1);
@@ -575,7 +648,55 @@ h1, h2, h3, h4 {
   margin: 0 0 2.5rem;
 }
 
-/* ─── Loop Player Controls ───────────────────────────────── */
+/* ─── Loop Player ────────────────────────────────────────── */
+.loop-player-wrap {
+  flex-shrink: 0;           /* 재생기는 크기 고정, transcript-scroll이 남은 공간 차지 */
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: #000;
+}
+
+.loop-player-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.875rem;
+  background: rgba(79, 70, 229, 0.18);
+  border-bottom: 1px solid rgba(99, 102, 241, 0.25);
+}
+
+.loop-player-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.775rem;
+  color: #a5b4fc;
+  font-weight: 500;
+}
+
+.loop-player-close {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.25rem 0.5rem;
+  border-radius: 5px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.loop-player-close:hover {
+  color: white;
+  background: rgba(255,255,255,0.08);
+}
+
+.loop-player-frame {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: block;
+}
+
+/* ─── Loop Controls ──────────────────────────────────────── */
 .loop-controls {
   padding: 0.875rem 1rem;
   background: rgba(79,70,229,0.08);
@@ -827,8 +948,8 @@ h1, h2, h3, h4 {
 
 .btn-modal-confirm:hover { opacity: 0.88; }
 
-/* ─── Scrollbar ──────────────────────────────────────────── */
-::-webkit-scrollbar { width: 5px; height: 5px; }
+/* ─── Scrollbar (global) ─────────────────────────────────── */
+::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: var(--surface-3);
@@ -861,4 +982,81 @@ h1, h2, h3, h4 {
   .transcript-scroll {
     padding: 1rem;
   }
+}
+
+/* ─── Segment list (transcript) ─────────────────────────── */
+.transcript-segments {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.transcript-seg {
+  display: flex;
+  align-items: baseline;
+  gap: 0.625rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: var(--radius-sm);
+  transition: background 0.12s;
+  border-left: 2px solid transparent;
+}
+
+.transcript-seg:hover {
+  background: var(--surface-1);
+}
+
+.transcript-seg.hit {
+  background: rgba(99, 102, 241, 0.06);
+  border-left-color: var(--brand);
+}
+
+.transcript-seg.active {
+  background: rgba(99, 102, 241, 0.14) !important;
+  border-left-color: var(--brand-light);
+}
+
+.transcript-seg.active .seg-text {
+  color: var(--text-primary);
+}
+
+.seg-timestamp {
+  flex-shrink: 0;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.695rem;
+  font-weight: 600;
+  color: var(--brand-light);
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 5px;
+  padding: 0.15rem 0.45rem;
+  cursor: pointer;
+  white-space: nowrap;
+  line-height: 1.4;
+  transition: background 0.15s, color 0.15s;
+}
+
+.seg-timestamp:hover {
+  background: rgba(99, 102, 241, 0.28);
+  color: white;
+}
+
+.seg-text {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  line-height: 1.65;
+  word-break: break-word;
+}
+
+/* ─── Search keyword highlight ───────────────────────────── */
+mark.search-highlight {
+  background: rgba(245, 158, 11, 0.28);
+  color: #fde68a;
+  border-radius: 3px;
+  padding: 0.05em 0.15em;
+  font-weight: 600;
+}
+
+/* search-field inside left panel controls-block */
+.controls-block .search-field {
+  background: var(--surface-2);
 }

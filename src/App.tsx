@@ -49,12 +49,14 @@ function LoopPlayer({
   end,
   onClose,
   formatTimestamp,
+  onPlayerReady,
 }: {
   videoId: string;
   start: number;
   end: number;
   onClose: () => void;
   formatTimestamp: (s: number) => string;
+  onPlayerReady?: (player: any) => void;
 }) {
   // YouTube IFrame API가 교체할 실제 DOM div를 참조
   const containerRef = useRef<HTMLDivElement>(null);
@@ -136,6 +138,7 @@ function LoopPlayer({
             e.target.seekTo(startRef.current, true);
             e.target.playVideo();
             startInterval();
+            onPlayerReady?.(e.target); // App으로 YT.Player 인스턴스 공유
           },
           onStateChange: (e: any) => {
             // 영상이 자연 종료(state=0)된 경우에도 즉시 start로 되돌려 재생
@@ -176,22 +179,17 @@ function LoopPlayer({
 
   // ── LoopPlayer 렌더링 ──────────────────────────────────────────
   return (
-    <div className="mb-4 rounded-xl overflow-hidden border border-indigo-500/30 bg-black">
+    <div className="loop-player-wrap">
       {/* 상단 상태 표시줄: 현재 반복 구간과 닫기 버튼 */}
-      <div className="flex items-center justify-between px-3 py-2 bg-indigo-600/20">
-        <span className="text-xs text-indigo-300 flex items-center gap-1.5">
-          <RotateCcw className="w-3.5 h-3.5 animate-spin" style={{ animationDuration: '2s' }} />
+      <div className="loop-player-bar">
+        <span className="loop-player-label">
+          <RotateCcw style={{ width: 13, height: 13, animation: 'spin 2s linear infinite', flexShrink: 0 }} />
           구간 반복 중: {formatTimestamp(start)} ~ {formatTimestamp(end)}
         </span>
-        <button
-          onClick={onClose}
-          className="text-xs text-gray-400 hover:text-white transition-colors"
-        >
-          ✕ 닫기
-        </button>
+        <button className="loop-player-close" onClick={onClose}>✕ 닫기</button>
       </div>
       {/* YouTube IFrame API가 이 div 요소를 실제 <iframe>으로 교체 */}
-      <div ref={containerRef} className="w-full aspect-video" />
+      <div ref={containerRef} className="loop-player-frame" />
     </div>
   );
 }
@@ -232,7 +230,14 @@ function App() {
   const [searchQuery, setSearchQuery] = useState('');           // 검색창 입력값
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]); // 검색 결과 목록
 
-  const [loopMode, setLoopMode] = useState(false); // 구간반복 모드 ON/OFF
+  // activeSegIdx: LoopPlayer 재생 중 현재 재생 위치에 해당하는 세그먼트 인덱스
+  // -1이면 비활성 (재생 안 함 또는 세그먼트 없음)
+  const [activeSegIdx, setActiveSegIdx] = useState<number>(-1);
+
+  // segmentRefs: 각 세그먼트 DOM 요소에 대한 ref 배열 (자동 스크롤용)
+  const segmentRefs = useRef<(HTMLDivElement | null)[]>([]);
+
+  const [loopMode, setLoopMode] = useState(true); // 구간반복 모드 ON/OFF (기본값: ON)
 
   // loopConfig: 구간반복 모드에서 현재 재생 중인 구간 설정
   //   - 클릭 즉시 설정되어 LoopPlayer가 바로 시작됨
@@ -461,16 +466,27 @@ function App() {
    */
   const handleSearch = () => {
     if (!searchQuery.trim() || segments.length === 0) {
-      setSearchResults([]); // 빈 쿼리나 세그먼트 없으면 결과 초기화
+      setSearchResults([]);
       return;
     }
 
-    const query = searchQuery.toLowerCase(); // 대소문자 무시 비교
+    const query = searchQuery.toLowerCase();
     const results: SearchResult[] = [];
+    const addedIndices = new Set<number>();
 
     segments.forEach((segment, index) => {
-      if (segment.text.toLowerCase().includes(query)) {
+      // ── 슬라이딩 윈도우: 이전·현재·다음 세그먼트를 이어붙여 경계 걸친 검색어도 탐지 ──
+      // window size = 3 (prev + current + next). 없는 경우 빈 문자열로 처리.
+      const prev  = segments[index - 1]?.text ?? '';
+      const cur   = segment.text;
+      const next  = segments[index + 1]?.text ?? '';
+
+      // 공백으로 이어붙여 "세그먼트 경계" 검색 가능하게 만듦
+      const combined = [prev, cur, next].join(' ').toLowerCase();
+
+      if (combined.includes(query) && !addedIndices.has(index)) {
         results.push({ segment, matchIndex: index });
+        addedIndices.add(index);
       }
     });
 
@@ -487,15 +503,58 @@ function App() {
    */
   const openYouTubeAtTime = (matchIndex: number, startTime: number) => {
     if (loopMode) {
-      // 구간반복 모드: 즉시 재생 시작 (초기 구간 = 클릭한 세그먼트 하나)
-      // 사용자는 재생 중에 아래 조정 UI로 실시간으로 시작/종료를 늘리거나 줄일 수 있음
       setLoopConfig({ matchIndex, startOffset: 0, endOffset: 0 });
-      window.scrollTo({ top: 0, behavior: 'smooth' }); // 플레이어 보이도록 스크롤
+      window.scrollTo({ top: 0, behavior: 'smooth' });
     } else {
-      // 일반 모드: 유튜브 새 탭으로 이동
       const timeInSeconds = Math.floor(startTime);
       window.open(`https://www.youtube.com/watch?v=${videoId}&t=${timeInSeconds}s`, '_blank');
     }
+  };
+
+  // ─── 재생 중 활성 세그먼트 감지 → 자동 스크롤 ─────────────────
+  // LoopPlayer의 YT.Player 인스턴스에 직접 접근하기 어려우므로,
+  // loopSegment가 활성화된 동안 200ms 인터벌로 현재 재생 시간을 폴링하여
+  // 해당 시간에 속하는 세그먼트를 찾아 activeSegIdx를 업데이트한다.
+  const loopPlayerRef = useRef<any>(null); // LoopPlayer가 공유해주는 YT.Player ref
+
+  useEffect(() => {
+    if (!loopMode || !loopConfig || segments.length === 0) {
+      setActiveSegIdx(-1);
+      return;
+    }
+    const timer = setInterval(() => {
+      const player = loopPlayerRef.current;
+      if (!player?.getCurrentTime) return;
+      const t = player.getCurrentTime();
+      // 현재 재생 시간 t가 속하는 세그먼트를 역방향으로 탐색 (마지막 start <= t)
+      let found = -1;
+      for (let i = segments.length - 1; i >= 0; i--) {
+        if (segments[i].start <= t) { found = i; break; }
+      }
+      if (found !== -1) {
+        setActiveSegIdx(prev => {
+          if (prev !== found) {
+            // 새 활성 세그먼트가 보이도록 스크롤
+            segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+          }
+          return found;
+        });
+      }
+    }, 200);
+    return () => clearInterval(timer);
+  }, [loopMode, loopConfig, segments]);
+
+  // ─── 검색어 키워드 하이라이트 헬퍼 ───────────────────────────
+  // text를 query 기준으로 분리하여 <mark>로 감싼 React 노드 배열로 반환
+  const highlightText = (text: string, query: string): React.ReactNode => {
+    if (!query.trim()) return text;
+    const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+    const parts = text.split(regex);
+    return parts.map((part, i) =>
+      regex.test(part)
+        ? <mark key={i} className="search-highlight">{part}</mark>
+        : part
+    );
   };
 
   // ─── TXT 파일 다운로드 ────────────────────────────────────────
@@ -868,6 +927,92 @@ function App() {
               )}
             </motion.div>
           )}
+
+          {/* ── 검색 패널 (결과 있을 때만) ── */}
+          {hasResult && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="controls-block search-panel"
+            >
+              <p className="section-label">
+                <Search style={{ width: 11, height: 11 }} />
+                대사 검색
+              </p>
+
+              <div className="search-field">
+                <Search style={{ width: 13, height: 13, color: 'var(--text-muted)', flexShrink: 0 }} />
+                <input
+                  type="text"
+                  placeholder="키워드 검색..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                />
+                <button className="btn-search" onClick={handleSearch}>
+                  <Search style={{ width: 11, height: 11 }} /> 검색
+                </button>
+              </div>
+              {loopMode && searchResults.length > 0 && (
+                <p style={{ margin: 0, fontSize: '0.7rem', color: 'var(--brand-light)' }}>
+                  클릭 시 해당 구간 반복 재생
+                </p>
+              )}
+
+              {/* 검색 결과 목록 — flex:1 영역 */}
+              <div className="search-panel-results">
+                <AnimatePresence mode="sync">
+                  {searchResults.length > 0 && (
+                    <motion.div
+                      key="search-results"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
+                    >
+                      <div style={{
+                        padding: '0.3rem 0',
+                        fontSize: '0.7rem', color: 'var(--text-muted)',
+                        borderTop: '1px solid var(--border)',
+                        display: 'flex', alignItems: 'center', gap: '0.3rem',
+                        flexShrink: 0,
+                      }}>
+                        <Clock style={{ width: 11, height: 11 }} />
+                        {searchResults.length}개 결과
+                      </div>
+                      <div className="search-results-panel">
+                        {searchResults.map((result, idx) => (
+                          <motion.div
+                            key={`${result.matchIndex}-${idx}`}
+                            initial={{ opacity: 0, x: -6 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: Math.min(idx * 0.03, 0.2) }}
+                            onClick={() => openYouTubeAtTime(result.matchIndex, result.segment.start)}
+                            className={`search-result-item${loopMode && loopConfig?.matchIndex === result.matchIndex ? ' playing' : ''}`}
+                          >
+                            <span className="timestamp-badge">{formatTimestamp(result.segment.start)}</span>
+                            <p className="search-result-text">
+                              {highlightText(result.segment.text, searchQuery)}
+                            </p>
+                          </motion.div>
+                        ))}
+                      </div>
+                    </motion.div>
+                  )}
+                  {searchQuery && searchResults.length === 0 && segments.length > 0 && (
+                    <motion.div
+                      key="no-result"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      style={{ padding: '0.5rem 0', fontSize: '0.775rem', color: 'var(--warning)', borderTop: '1px solid var(--border)' }}
+                    >
+                      "{searchQuery}" 검색 결과가 없습니다.
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </motion.div>
+          )}
         </aside>
 
         {/* ══ 우측 패널: 결과 ════════════════════════════════════ */}
@@ -917,6 +1062,7 @@ function App() {
                     end={loopSegment.end}
                     onClose={() => setLoopConfig(null)}
                     formatTimestamp={formatTimestamp}
+                    onPlayerReady={(player) => { loopPlayerRef.current = player; }}
                   />
                   <div className="loop-controls">
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
@@ -992,82 +1138,43 @@ function App() {
                 </button>
               </div>
 
-              {/* 자막 텍스트 */}
+              {/* 자막 — 세그먼트별 렌더링 (하이라이트 + 재생 위치 추적) */}
               <div className="transcript-scroll">
-                <p className="transcript-text">{transcript}</p>
-              </div>
-
-              {/* 검색 */}
-              <div style={{ borderTop: '1px solid var(--border)', flexShrink: 0 }}>
-                <div className="search-wrap">
-                  <div className="search-field">
-                    <Search style={{ width: 14, height: 14, color: 'var(--text-muted)', flexShrink: 0 }} />
-                    <input
-                      type="text"
-                      placeholder="대사에서 검색..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                    />
-                    <button className="btn-search" onClick={handleSearch}>
-                      <Search style={{ width: 12, height: 12 }} /> 검색
-                    </button>
-                  </div>
-                  {loopMode && searchResults.length > 0 && (
-                    <p style={{ margin: '0.4rem 0 0', fontSize: '0.7rem', color: 'var(--brand-light)' }}>
-                      결과 클릭 시 해당 구간부터 반복 재생
-                    </p>
-                  )}
-                </div>
-
-                <AnimatePresence mode="sync">
-                  {searchResults.length > 0 && (
-                    <motion.div
-                      key="results"
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      exit={{ opacity: 0, height: 0 }}
-                      style={{ overflow: 'hidden' }}
-                    >
-                      <div style={{
-                        padding: '0.4rem 1rem',
-                        fontSize: '0.7rem', color: 'var(--text-muted)',
-                        borderTop: '1px solid var(--border)',
-                        background: 'var(--surface-0)',
-                        display: 'flex', alignItems: 'center', gap: '0.3rem'
-                      }}>
-                        <Clock style={{ width: 11, height: 11 }} />
-                        {searchResults.length}개 결과
-                      </div>
-                      <div className="search-results-panel" style={{ maxHeight: 260 }}>
-                        {searchResults.map((result, idx) => (
-                          <motion.div
-                            key={`${result.matchIndex}-${idx}`}
-                            initial={{ opacity: 0, x: -8 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: Math.min(idx * 0.03, 0.25) }}
-                            onClick={() => openYouTubeAtTime(result.matchIndex, result.segment.start)}
-                            className={`search-result-item${loopMode && loopConfig?.matchIndex === result.matchIndex ? ' playing' : ''}`}
+                {segments.length > 0 ? (
+                  <div className="transcript-segments">
+                    {segments.map((seg, i) => {
+                      const isActive  = activeSegIdx === i;   // 현재 재생 중인 세그먼트
+                      const isHit     = searchResults.some(r => r.matchIndex === i); // 검색 히트
+                      return (
+                        <div
+                          key={i}
+                          ref={el => { segmentRefs.current[i] = el; }}
+                          className={[
+                            'transcript-seg',
+                            isActive ? 'active' : '',
+                            isHit    ? 'hit'    : '',
+                          ].join(' ').trim()}
+                        >
+                          {/* 타임스탬프 버튼 */}
+                          <button
+                            className="seg-timestamp"
+                            onClick={() => openYouTubeAtTime(i, seg.start)}
+                            title={loopMode ? '클릭 → 구간 반복' : '클릭 → YouTube에서 열기'}
                           >
-                            <span className="timestamp-badge">{formatTimestamp(result.segment.start)}</span>
-                            <p className="search-result-text">{result.segment.text}</p>
-                          </motion.div>
-                        ))}
-                      </div>
-                    </motion.div>
-                  )}
-
-                  {searchQuery && searchResults.length === 0 && segments.length > 0 && (
-                    <motion.div
-                      key="no-result"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      style={{ padding: '0.75rem 1rem', fontSize: '0.8rem', color: 'var(--warning)', borderTop: '1px solid var(--border)' }}
-                    >
-                      "{searchQuery}" 검색 결과가 없습니다.
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+                            {formatTimestamp(seg.start)}
+                          </button>
+                          {/* 텍스트 (검색 키워드 하이라이트) */}
+                          <span className="seg-text">
+                            {highlightText(seg.text.trim(), searchQuery && searchResults.length > 0 ? searchQuery : '')}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  // 세그먼트 없음 (레거시 평문 transcript)
+                  <p className="transcript-text">{transcript}</p>
+                )}
               </div>
 
             </motion.div>

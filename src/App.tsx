@@ -265,6 +265,12 @@ function App() {
   const [includeTimestamps, setIncludeTimestamps] = useState(false);
   // includeTimestamps: TXT 저장 시 타임스탬프 포함 여부 (true: "[0:00] 텍스트" 형식)
 
+  const [lineBreak, setLineBreak] = useState(false);
+  // lineBreak: 타임스탬프 미포함 시 세그먼트 사이 줄바꿈 여부
+
+  const [lineBreakCount, setLineBreakCount] = useState(1);
+  // lineBreakCount: 세그먼트 사이에 삽입할 빈 줄 수 (0 = 줄바꿈만, 1 = 1줄, 2 = 2줄)
+
   const [pendingUrl, setPendingUrl] = useState('');
   // pendingUrl: Whisper 확인 모달이 뜬 동안 임시 저장된 요청 URL
 
@@ -518,22 +524,35 @@ function App() {
       let content: string;
 
       if (includeTimestamps && segments.length > 0) {
-        // 타임스탬프 포함: "[0:00] 텍스트\r\n[0:05] 텍스트\r\n..." 형식
+        // 타임스탬프 포함: 항상 세그먼트마다 줄바꿈 + lineBreakCount 만큼 빈 줄 추가
+        const extra = '\r\n'.repeat(lineBreakCount); // 빈 줄 수만큼 추가 줄바꿈
         content = segments
           .map(seg => `[${formatTimestamp(seg.start)}] ${decodeHtmlEntities(seg.text.trim())}`)
-          .join('\r\n');
+          .join('\r\n' + extra);
       } else {
-        // 타임스탬프 미포함: 순수 평문 — 세그먼트를 직접 조합해 엔티티 디코딩 적용
+        // 타임스탬프 미포함
         if (segments.length > 0) {
-          content = segments
-            .map(seg => decodeHtmlEntities(seg.text.trim()))
-            .join(' ');
+          if (lineBreak) {
+            // 줄바꿈 ON: \r\n + lineBreakCount 만큼 빈 줄 삽입
+            // lineBreakCount=0 → 줄바꿈만 (빈 줄 없음)
+            // lineBreakCount=1 → 1줄 빈 줄 (세그먼트 사이 한 줄 공백)
+            // lineBreakCount=2 → 2줄 빈 줄
+            const separator = '\r\n' + '\r\n'.repeat(lineBreakCount);
+            content = segments
+              .map(seg => decodeHtmlEntities(seg.text.trim()))
+              .join(separator);
+          } else {
+            // 줄바꿈 OFF: 공백으로 이어붙이기 (기존 동작)
+            content = segments
+              .map(seg => decodeHtmlEntities(seg.text.trim()))
+              .join(' ');
+          }
         } else {
           content = decodeHtmlEntities(transcript);
         }
       }
 
-      // Windows CRLF 정규화 (혹시 \n만 있는 줄바꿈이 있으면 \r\n으로 통일)
+      // Windows CRLF 정규화
       content = content.replace(/\r?\n/g, '\r\n');
 
       // BOM: Windows 환경에서 UTF-8 자동 인식을 위해 필요
@@ -548,7 +567,6 @@ function App() {
       a.click();
       document.body.removeChild(a);
 
-      // 메모리 해제
       setTimeout(() => URL.revokeObjectURL(objectUrl), 100);
 
     } catch (err) {
@@ -561,264 +579,338 @@ function App() {
   // ================================================================
   // JSX 렌더링
   // ================================================================
-  return (
-    <div className="min-h-screen flex items-center justify-center p-4">
+  const hasResult = !!transcript;
 
-      {/* ── Whisper 확인 모달 ──────────────────────────────────────
-          자막이 없는 영상일 때 사용자에게 Whisper STT 사용 여부 확인
-          AnimatePresence: showWhisperConfirm이 false가 되면 페이드아웃 애니메이션 적용 */}
+  return (
+    <div className="app-shell">
+
+      {/* ── Whisper 확인 모달 ────────────────────────────────── */}
       <AnimatePresence>
         {showWhisperConfirm && (
-          // 반투명 배경 오버레이
           <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            className="modal-overlay"
           >
-            {/* 모달 카드 */}
             <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
+              initial={{ scale: 0.92, opacity: 0 }}
               animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="glass-card max-w-md w-full mx-4 p-8 text-center"
+              exit={{ scale: 0.92, opacity: 0 }}
+              className="modal-card"
             >
-              <div className="text-4xl mb-4">🎙️</div>
-              <h2 className="text-xl font-bold text-white mb-3">자막이 없는 영상입니다</h2>
-              <p className="text-gray-400 mb-6 text-sm leading-relaxed">
-                이 영상에는 YouTube 자막이 없습니다.<br />
-                <span className="text-indigo-400 font-medium">AI 음성인식(Whisper)</span>으로 추출할 수 있지만,<br />
-                영상 길이에 따라 <span className="text-yellow-400 font-medium">수 분이 소요</span>될 수 있습니다.
+              <div className="modal-icon">🎙️</div>
+              <h2 className="modal-title">자막이 없는 영상입니다</h2>
+              <p className="modal-desc">
+                YouTube 자막을 찾을 수 없습니다.<br />
+                <span style={{ color: 'var(--brand-light)', fontWeight: 600 }}>AI 음성인식(Whisper)</span>으로
+                추출할 수 있지만, 영상 길이에 따라{' '}
+                <span style={{ color: 'var(--warning)', fontWeight: 600 }}>수 분이 소요</span>될 수 있습니다.
               </p>
-              <div className="flex gap-3">
-                {/* 취소: 모달 닫고 종료 */}
-                <button
-                  onClick={handleWhisperCancel}
-                  className="flex-1 py-3 rounded-xl border border-white/20 text-gray-300 hover:bg-white/10 transition-colors"
-                >
-                  취소
-                </button>
-                {/* 계속 진행: Whisper로 재요청 */}
-                <button
-                  onClick={handleWhisperConfirm}
-                  className="flex-1 py-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-medium transition-colors"
-                >
-                  계속 진행
-                </button>
+              <div className="modal-actions">
+                <button className="btn-modal-cancel" onClick={handleWhisperCancel}>취소</button>
+                <button className="btn-modal-confirm" onClick={handleWhisperConfirm}>AI로 추출하기</button>
               </div>
             </motion.div>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* ── 메인 카드 ────────────────────────────────────────────── */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}  // 처음 마운트 시 아래서 위로 페이드인
-        animate={{ opacity: 1, y: 0 }}
-        className="glass-card w-full max-w-3xl"
-      >
-        {/* 헤더 영역: 로고 아이콘 + 타이틀 + 부제목 */}
-        <header className="mb-8 flex flex-col items-center">
-          <div className="p-4 bg-indigo-500/20 rounded-2xl mb-4">
-            <Youtube className="w-12 h-12 text-indigo-400" />
+      {/* ── Top Nav ──────────────────────────────────────────── */}
+      <nav className="top-nav">
+        <div className="nav-brand">
+          <div className="nav-brand-icon">
+            <Youtube style={{ width: 15, height: 15 }} />
           </div>
-          <h1 className="text-4xl font-bold bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent mb-2">
-            YouTube Scribe
-          </h1>
-          <p className="text-gray-400 text-lg">
-            스크립트 없는 영상도 대사로 변신시켜 드립니다
-          </p>
-        </header>
+          YouTube Scribe
+        </div>
+        <span className="nav-badge">Beta</span>
+      </nav>
 
-        {/* URL 입력 폼
-            onSubmit: Enter 또는 버튼 클릭 시 handleSubmit 호출 */}
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div className="input-group">
-            <Youtube className="w-5 h-5 text-gray-400 mr-2 flex-shrink-0" />
-            <input
-              type="text"
-              placeholder="유튜브 영상 링크를 입력하세요 (https://www.youtube.com/...)"
-              value={url}
-              onChange={(e) => {
-                const val = e.target.value;
-                setUrl(val);
-                // URL이 바뀌면 이전 언어 목록 초기화
-                setAvailableLangs([]);
-                setSelectedLang('');
-                setLangError('');
-                // 디바운스: 유효한 YouTube URL이면 600ms 뒤에 언어 목록 자동 조회
-                if (langDebounceRef.current) clearTimeout(langDebounceRef.current);
-                if (YT_URL_RE.test(val)) {
-                  langDebounceRef.current = setTimeout(() => fetchLanguages(val), 600);
-                }
-              }}
-              disabled={loading}
-            />
-            {/* 제출 버튼 */}
-            <button
-              type="submit"
-              className="btn-primary flex-shrink-0"
-              disabled={loading || !url}
-            >
-              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              {loading ? '추출 중...' : '추출하기'}
-            </button>
-          </div>
+      {/* ── Main Layout ──────────────────────────────────────── */}
+      <div className={`main-content${hasResult ? '' : ' hero-layout'}`}>
 
-          {/* 언어 선택 드롭다운: URL 입력 후 자막 언어 목록이 조회됐을 때 표시 */}
-          <AnimatePresence>
-            {(langLoading || availableLangs.length > 0 || langError) && (
-              <motion.div
-                key="lang-selector"
-                initial={{ opacity: 0, height: 0 }}
-                animate={{ opacity: 1, height: 'auto' }}
-                exit={{ opacity: 0, height: 0 }}
-                className="overflow-hidden"
-              >
-                {langLoading ? (
-                  // 로딩 중: 스피너
-                  <div className="flex items-center gap-2 text-xs text-gray-400 px-1 py-2">
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
-                    이 영상의 자막 언어 목록을 불러오는 중...
-                  </div>
-                ) : langError ? (
-                  // 자막 없는 영상: 안내 (Whisper는 추출 단계에서 제안됨)
-                  <div className="flex items-center gap-2 text-xs text-yellow-400/80 px-1 py-2">
-                    <span>⚠️</span>
-                    이 영상에서 자막 언어를 찾지 못했습니다. 추출 시 Whisper(AI)를 제안합니다.
-                  </div>
-                ) : (
-                  // 언어 목록 표시: 드롭다운
-                  <div className="flex items-center gap-2">
-                    <label className="text-xs text-gray-400 whitespace-nowrap flex-shrink-0">
-                      🌐 자막 언어
-                    </label>
-                    <select
-                      value={selectedLang}
-                      onChange={(e) => handleLangChange(e.target.value)}
-                      disabled={loading}
-                      className="lang-select"
-                    >
-                      <option value="">자동 선택 (권장)</option>
-                      {/* 구분선: 수동 자막 그룹 */}
-                      {availableLangs.some(l => !l.is_generated) && (
-                        <option disabled>── 수동 자막 ──</option>
-                      )}
-                      {availableLangs.filter(l => !l.is_generated).map(l => (
-                        <option key={l.code} value={l.code}>{l.label}</option>
-                      ))}
-                      {/* 구분선: 자동 생성 자막 그룹 */}
-                      {availableLangs.some(l => l.is_generated) && (
-                        <option disabled>── 자동 생성 자막 ──</option>
-                      )}
-                      {availableLangs.filter(l => l.is_generated).map(l => (
-                        <option key={`auto-${l.code}`} value={l.code}>{l.label}</option>
-                      ))}
-                    </select>
-                    {/* 선택된 언어 배지 */}
-                    {selectedLang && (
-                      <span className="text-xs px-2 py-1 rounded-md bg-indigo-600/30 text-indigo-300 border border-indigo-500/40 whitespace-nowrap flex-shrink-0">
-                        {availableLangs.find(l => l.code === selectedLang)?.name ?? selectedLang}
-                      </span>
-                    )}
-                  </div>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </form>
+        {/* ══ 좌측 패널: 입력 & 컨트롤 ══════════════════════════ */}
+        <aside className="left-panel">
 
-        {/* ── 에러 메시지 & 자막 결과 영역 (AnimatePresence로 애니메이션) */}
-        <AnimatePresence>
-          {/* 에러 메시지 표시 (빨간 박스) */}
-          {error && (
+          {/* Hero 헤딩 (결과 없을 때만) */}
+          {!hasResult && (
             <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: 'auto' }}
-              exit={{ opacity: 0, height: 0 }}
-              className="mt-4 p-3 bg-red-500/10 border border-red-500/20 rounded-xl text-red-400 text-sm"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4 }}
             >
-              {error}
+              <h1 className="hero-heading">YouTube<br />Scribe</h1>
+              <p className="hero-sub">영상 URL만 넣으면 대사를 자동으로 추출해 드립니다</p>
             </motion.div>
           )}
 
-          {/* 자막 결과 영역: transcript가 있을 때만 표시 */}
-          {transcript && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="mt-8 space-y-4"
-            >
-              {/* 섹션 헤더: 제목 + 액션 버튼들 */}
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <h2 className="text-xl font-semibold flex items-center gap-2">
-                  <FileText className="w-5 h-5 text-indigo-400" />
-                  추출된 대사
-                </h2>
-                <div className="flex items-center gap-1.5 flex-shrink-0">
-
-                  {/* 타임스탬프 포함/제외 토글 버튼 */}
-                  <button
-                    onClick={() => setIncludeTimestamps(v => !v)}
-                    title={includeTimestamps ? '시간 정보 포함 (클릭하면 제외)' : '시간 정보 제외 (클릭하면 포함)'}
-                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border ${
-                      includeTimestamps
-                        ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
-                        : 'bg-white/5 border-white/10 text-gray-400 hover:text-gray-200 hover:bg-white/10'
-                    }`}
-                  >
-                    <Clock className="w-3.5 h-3.5" />
-                    <span className="hidden sm:inline">시간</span> {includeTimestamps ? 'ON' : 'OFF'}
-                  </button>
-
-                  {/* 구간반복 모드 토글 버튼 */}
-                  <button
-                    onClick={() => setLoopMode(v => !v)}
-                    title={loopMode ? '구간반복 ON (클릭하면 OFF)' : '구간반복 OFF (클릭하면 ON)'}
-                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border ${
-                      loopMode
-                        ? 'bg-indigo-600/30 border-indigo-500/50 text-indigo-300'
-                        : 'bg-white/5 border-white/10 text-gray-400 hover:text-gray-200 hover:bg-white/10'
-                    }`}
-                  >
-                    <RotateCcw
-                      className={`w-3.5 h-3.5 ${loopMode ? 'animate-spin' : ''}`}
-                      style={loopMode ? { animationDuration: '2s' } : {}}
-                    />
-                    <span className="hidden sm:inline">반복</span> {loopMode ? 'ON' : 'OFF'}
-                  </button>
-
-                  {/* 구분선 */}
-                  <div className="w-px h-5 bg-white/10 mx-0.5" />
-
-                  {/* 복사 버튼 */}
-                  <button
-                    onClick={copyToClipboard}
-                    title="클립보드에 복사"
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-gray-200 hover:bg-white/10 border border-white/10 transition-all"
-                  >
-                    {copied ? <CheckCircle2 className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    {copied ? '복사됨' : '복사'}
-                  </button>
-
-                  {/* 저장 버튼 */}
-                  <button
-                    onClick={downloadTxt}
-                    title="TXT 파일로 저장"
-                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium text-gray-400 hover:text-gray-200 hover:bg-white/10 border border-white/10 transition-all"
-                  >
-                    <Download className="w-3.5 h-3.5" />
-                    저장
-                  </button>
-                </div>
+          {/* URL 입력 */}
+          <div className="url-input-wrap">
+            <p className="section-label">YouTube URL</p>
+            <form onSubmit={handleSubmit}>
+              <div className="url-field">
+                <Youtube style={{ width: 16, height: 16, color: 'var(--text-muted)', flexShrink: 0 }} />
+                <input
+                  type="text"
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  value={url}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setUrl(val);
+                    setAvailableLangs([]);
+                    setSelectedLang('');
+                    setLangError('');
+                    if (langDebounceRef.current) clearTimeout(langDebounceRef.current);
+                    if (YT_URL_RE.test(val)) {
+                      langDebounceRef.current = setTimeout(() => fetchLanguages(val), 600);
+                    }
+                  }}
+                  disabled={loading}
+                />
+                <button type="submit" className="btn-extract" disabled={loading || !url}>
+                  {loading
+                    ? <><Loader2 style={{ width: 13, height: 13, animation: 'spin 0.8s linear infinite' }} /> 추출 중</>
+                    : <><Send style={{ width: 13, height: 13 }} /> 추출하기</>
+                  }
+                </button>
               </div>
+            </form>
 
-              {/* ─── 구간반복 플레이어 + 실시간 구간 조정 UI ───────────────
-                  loopConfig가 설정되면 LoopPlayer가 바로 시작됨
-                  플레이어 아래 구간 조정 컨트롤로 재생 중에 실시간으로 시작/종료 조정 */}
+            {/* 언어 선택 */}
+            <AnimatePresence>
+              {(langLoading || availableLangs.length > 0 || langError) && (
+                <motion.div
+                  key="lang"
+                  initial={{ opacity: 0, height: 0 }}
+                  animate={{ opacity: 1, height: 'auto' }}
+                  exit={{ opacity: 0, height: 0 }}
+                  style={{ overflow: 'hidden' }}
+                >
+                  {langLoading ? (
+                    <div className="lang-row">
+                      <Loader2 style={{ width: 13, height: 13, color: 'var(--brand-light)', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+                      <span className="lang-row-label">언어 목록 불러오는 중...</span>
+                    </div>
+                  ) : langError ? (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.4rem 0.25rem' }}>
+                      <span className="status-chip warn">⚠ 자막 없음 — AI 추출 가능</span>
+                    </div>
+                  ) : (
+                    <div className="lang-row">
+                      <span className="lang-row-label">🌐 언어</span>
+                      <select
+                        className="lang-select"
+                        value={selectedLang}
+                        onChange={(e) => handleLangChange(e.target.value)}
+                        disabled={loading}
+                      >
+                        <option value="">자동 선택 (권장)</option>
+                        {availableLangs.some(l => !l.is_generated) && <option disabled>── 수동 자막 ──</option>}
+                        {availableLangs.filter(l => !l.is_generated).map(l => (
+                          <option key={l.code} value={l.code}>{l.label}</option>
+                        ))}
+                        {availableLangs.some(l => l.is_generated) && <option disabled>── 자동 생성 ──</option>}
+                        {availableLangs.filter(l => l.is_generated).map(l => (
+                          <option key={`auto-${l.code}`} value={l.code}>{l.label}</option>
+                        ))}
+                      </select>
+                      {selectedLang && (
+                        <span className="status-chip info">
+                          {availableLangs.find(l => l.code === selectedLang)?.name ?? selectedLang}
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* 에러 배너 */}
+          <AnimatePresence>
+            {error && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                style={{ overflow: 'hidden' }}
+              >
+                <div className="error-banner">
+                  <span style={{ flexShrink: 0 }}>⚠</span>
+                  {error}
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* 결과 있을 때 — 설정 컨트롤 */}
+          {hasResult && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              className="controls-block"
+            >
+              <p className="section-label">저장 옵션</p>
+
+              {/* 타임스탬프 토글 */}
+              <label className="control-row" style={{ cursor: 'pointer' }}>
+                <span className="control-row-label">
+                  <Clock style={{ width: 14, height: 14, color: 'var(--brand-light)' }} />
+                  타임스탬프 포함 저장
+                </span>
+                <div className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={includeTimestamps}
+                    onChange={() => setIncludeTimestamps(v => !v)}
+                  />
+                  <div className="toggle-track" />
+                  <div className="toggle-thumb" />
+                </div>
+              </label>
+
+              {/* 줄바꿈 토글 */}
+              <label className="control-row" style={{ cursor: 'pointer' }}>
+                <span className="control-row-label">
+                  <svg style={{ width: 14, height: 14, color: lineBreak ? 'var(--brand-light)' : 'var(--text-muted)', flexShrink: 0 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                  </svg>
+                  줄바꿈
+                </span>
+                <div className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={lineBreak}
+                    onChange={() => setLineBreak(v => !v)}
+                  />
+                  <div className="toggle-track" />
+                  <div className="toggle-thumb" />
+                </div>
+              </label>
+
+              {/* 빈 줄 수 선택 (줄바꿈 ON 또는 타임스탬프 ON일 때 표시) */}
+              <AnimatePresence>
+                {(lineBreak || includeTimestamps) && (
+                  <motion.div
+                    key="line-break-count"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    style={{ overflow: 'hidden' }}
+                  >
+                    <div className="control-row" style={{ alignItems: 'center' }}>
+                      <span className="control-row-label" style={{ fontSize: '0.775rem' }}>
+                        세그먼트 사이 빈 줄
+                      </span>
+                      {/* 빈 줄 수 버튼 그룹: 0 / 1 / 2 / 3줄 */}
+                      <div style={{ display: 'flex', gap: '0.25rem' }}>
+                        {[0, 1, 2, 3].map(n => (
+                          <button
+                            key={n}
+                            onClick={() => setLineBreakCount(n)}
+                            style={{
+                              width: 28, height: 26,
+                              borderRadius: 6,
+                              border: lineBreakCount === n
+                                ? '1px solid var(--brand)'
+                                : '1px solid var(--border-strong)',
+                              background: lineBreakCount === n
+                                ? 'rgba(99,102,241,0.2)'
+                                : 'var(--surface-2)',
+                              color: lineBreakCount === n
+                                ? 'var(--brand-light)'
+                                : 'var(--text-muted)',
+                              fontSize: '0.725rem',
+                              fontWeight: lineBreakCount === n ? 700 : 400,
+                              cursor: 'pointer',
+                              transition: 'all 0.15s',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            }}
+                          >
+                            {n === 0 ? '없음' : `${n}줄`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* 구간반복 토글 */}
+              <label className="control-row" style={{ cursor: 'pointer' }}>
+                <span className="control-row-label">
+                  <RotateCcw style={{
+                    width: 14, height: 14,
+                    color: loopMode ? 'var(--brand-light)' : 'var(--text-muted)',
+                    animation: loopMode ? 'spin 2s linear infinite' : 'none'
+                  }} />
+                  구간 반복 모드
+                </span>
+                <div className="toggle">
+                  <input
+                    type="checkbox"
+                    checked={loopMode}
+                    onChange={() => setLoopMode(v => !v)}
+                  />
+                  <div className="toggle-track" />
+                  <div className="toggle-thumb" />
+                </div>
+              </label>
+
+              {segments.length > 0 && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '0.5rem 0.875rem',
+                  fontSize: '0.75rem', color: 'var(--text-muted)'
+                }}>
+                  <span>추출된 세그먼트</span>
+                  <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>{segments.length}개</span>
+                </div>
+              )}
+            </motion.div>
+          )}
+        </aside>
+
+        {/* ══ 우측 패널: 결과 ════════════════════════════════════ */}
+        <main className="right-panel">
+
+          {/* 로딩 */}
+          {loading && (
+            <div className="loading-state">
+              <div className="spinner-ring" />
+              <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', textAlign: 'center', maxWidth: 280, margin: 0 }}>
+                AI가 영상을 분석하고 있습니다.<br />
+                <span style={{ color: 'var(--text-secondary)' }}>영상 길이에 따라 수 분이 소요될 수 있습니다.</span>
+              </p>
+            </div>
+          )}
+
+          {/* 빈 상태 */}
+          {!loading && !hasResult && (
+            <motion.div
+              className="empty-state"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.2 }}
+            >
+              <div className="empty-state-icon">
+                <FileText style={{ width: 22, height: 22 }} />
+              </div>
+              <p style={{ fontSize: '0.8125rem', margin: 0 }}>
+                URL을 입력하고 추출하기를 누르면<br />대사가 여기에 표시됩니다
+              </p>
+            </motion.div>
+          )}
+
+          {/* 결과 영역 */}
+          {hasResult && !loading && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+            >
+              {/* 구간반복 플레이어 */}
               {loopMode && loopConfig && loopSegment && (
-                <div className="space-y-0">
-                  {/* 영상 플레이어 */}
+                <div>
                   <LoopPlayer
                     videoId={videoId}
                     start={loopSegment.start}
@@ -826,188 +918,153 @@ function App() {
                     onClose={() => setLoopConfig(null)}
                     formatTimestamp={formatTimestamp}
                   />
-
-                  {/* 재생 중 실시간 구간 조정 패널
-                      버튼을 누르면 loopConfig의 offset이 바뀌고
-                      → loopSegment(파생값)가 즉시 재계산
-                      → LoopPlayer의 start/end props가 업데이트
-                      → LoopPlayer 내부 ref가 업데이트되어 다음 루프부터 반영 */}
-                  <div className="p-4 bg-indigo-950/80 border border-indigo-500/40 border-t-0 rounded-b-xl space-y-3">
-                    {/* 헤더 */}
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-indigo-300 flex items-center gap-1.5">
-                        <RotateCcw className="w-3.5 h-3.5 animate-spin" style={{ animationDuration: '3s' }} />
-                        재생 중 구간 실시간 조정
+                  <div className="loop-controls">
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                      <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--brand-light)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                        구간 실시간 조정
                       </span>
-                      <span className="text-xs text-gray-500">◀▶ 버튼으로 한 문장씩 조정</span>
-                    </div>
-
-                    {/* 시작 구간 조정 */}
-                    <div className="space-y-1">
-                      <p className="text-xs text-indigo-400/70 font-medium">시작 구간</p>
-                      <div className="flex items-center gap-2">
-                        {/* 시작을 한 세그먼트 더 앞으로 (범위 확장) */}
-                        <button
-                          onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.min(c.startOffset + 1, c.matchIndex) } : null)}
-                          disabled={loopSegment.startSegIdx === 0}
-                          title="시작을 한 문장 앞으로"
-                          className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 hover:bg-indigo-500/40 text-white disabled:opacity-25 disabled:cursor-not-allowed transition-colors text-sm font-bold"
-                        >◀</button>
-                        {/* 현재 시작 세그먼트 미리보기 */}
-                        <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-black/30 rounded-lg border border-indigo-500/30 min-w-0">
-                          <span className="text-xs font-mono text-indigo-300 flex-shrink-0 font-semibold">
-                            {formatTimestamp(loopSegment.startSeg.start)}
-                          </span>
-                          <span className="text-xs text-gray-300 truncate">
-                            {loopSegment.startSeg.text.trim()}
-                          </span>
-                        </div>
-                        {/* 시작을 한 세그먼트 뒤로 (범위 축소) */}
-                        <button
-                          onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.max(0, c.startOffset - 1) } : null)}
-                          disabled={loopConfig.startOffset === 0}
-                          title="시작을 한 문장 뒤로"
-                          className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 hover:bg-indigo-500/40 text-white disabled:opacity-25 disabled:cursor-not-allowed transition-colors text-sm font-bold"
-                        >▶</button>
-                      </div>
-                    </div>
-
-                    {/* 종료 구간 조정 */}
-                    <div className="space-y-1">
-                      <p className="text-xs text-indigo-400/70 font-medium">종료 구간</p>
-                      <div className="flex items-center gap-2">
-                        {/* 종료를 한 세그먼트 앞으로 (범위 축소) */}
-                        <button
-                          onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.max(0, c.endOffset - 1) } : null)}
-                          disabled={loopConfig.endOffset === 0}
-                          title="종료를 한 문장 앞으로"
-                          className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 hover:bg-indigo-500/40 text-white disabled:opacity-25 disabled:cursor-not-allowed transition-colors text-sm font-bold"
-                        >◀</button>
-                        {/* 현재 종료 세그먼트 미리보기 */}
-                        <div className="flex-1 flex items-center gap-2 px-3 py-2 bg-black/30 rounded-lg border border-indigo-500/30 min-w-0">
-                          <span className="text-xs font-mono text-indigo-300 flex-shrink-0 font-semibold">
-                            {formatTimestamp(loopSegment.endSeg.start + loopSegment.endSeg.duration)}
-                          </span>
-                          <span className="text-xs text-gray-300 truncate">
-                            {loopSegment.endSeg.text.trim()}
-                          </span>
-                        </div>
-                        {/* 종료를 한 세그먼트 뒤로 (범위 확장) */}
-                        <button
-                          onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.min(c.endOffset + 1, segments.length - 1 - c.matchIndex) } : null)}
-                          disabled={loopSegment.endSegIdx >= segments.length - 1}
-                          title="종료를 한 문장 뒤로"
-                          className="w-8 h-8 flex items-center justify-center rounded-lg bg-white/10 hover:bg-indigo-500/40 text-white disabled:opacity-25 disabled:cursor-not-allowed transition-colors text-sm font-bold"
-                        >▶</button>
-                      </div>
-                    </div>
-
-                    {/* 현재 구간 요약 표시 */}
-                    <div className="flex items-center justify-between pt-2 border-t border-indigo-500/20">
-                      <span className="text-xs text-gray-400 flex items-center gap-1">
-                        <RotateCcw className="w-3 h-3 text-indigo-400" />
-                        현재 반복 구간:
-                        <span className="text-indigo-300 font-mono ml-1">{formatTimestamp(loopSegment.start)}</span>
-                        <span className="text-gray-500">~</span>
-                        <span className="text-indigo-300 font-mono">{formatTimestamp(loopSegment.end)}</span>
-                        <span className="text-gray-500 ml-1">
-                          ({Math.floor(loopSegment.end - loopSegment.start)}초)
-                        </span>
+                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                        {formatTimestamp(loopSegment.start)} ~ {formatTimestamp(loopSegment.end)}
+                        &nbsp;({Math.floor(loopSegment.end - loopSegment.start)}s)
                       </span>
+                    </div>
+                    <div className="loop-ctrl-row" style={{ marginBottom: '0.375rem' }}>
+                      <span className="loop-ctrl-label">시작</span>
+                      <button className="btn-loop-step"
+                        onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.min(c.startOffset + 1, c.matchIndex) } : null)}
+                        disabled={loopSegment.startSegIdx === 0}
+                      >◀</button>
+                      <div className="loop-ctrl-preview">
+                        <span className="loop-ctrl-time">{formatTimestamp(loopSegment.startSeg.start)}</span>
+                        <span className="loop-ctrl-text">{loopSegment.startSeg.text.trim()}</span>
+                      </div>
+                      <button className="btn-loop-step"
+                        onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.max(0, c.startOffset - 1) } : null)}
+                        disabled={loopConfig.startOffset === 0}
+                      >▶</button>
+                    </div>
+                    <div className="loop-ctrl-row">
+                      <span className="loop-ctrl-label">종료</span>
+                      <button className="btn-loop-step"
+                        onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.max(0, c.endOffset - 1) } : null)}
+                        disabled={loopConfig.endOffset === 0}
+                      >◀</button>
+                      <div className="loop-ctrl-preview">
+                        <span className="loop-ctrl-time">{formatTimestamp(loopSegment.endSeg.start + loopSegment.endSeg.duration)}</span>
+                        <span className="loop-ctrl-text">{loopSegment.endSeg.text.trim()}</span>
+                      </div>
+                      <button className="btn-loop-step"
+                        onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.min(c.endOffset + 1, segments.length - 1 - c.matchIndex) } : null)}
+                        disabled={loopSegment.endSegIdx >= segments.length - 1}
+                      >▶</button>
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* 자막 텍스트 표시 영역 (스크롤 가능, max-height 500px) */}
-              <div className="transcript-area">
-                {transcript}
+              {/* 액션 바 */}
+              <div className="action-bar">
+                <span className="action-bar-title">
+                  <FileText style={{ width: 14, height: 14, color: 'var(--brand-light)' }} />
+                  추출된 대사
+                  {segments.length > 0 && (
+                    <span style={{
+                      fontSize: '0.7rem', padding: '0.15rem 0.5rem',
+                      background: 'var(--surface-2)', border: '1px solid var(--border)',
+                      borderRadius: 100, color: 'var(--text-muted)', fontWeight: 500
+                    }}>{segments.length}개</span>
+                  )}
+                </span>
+                <button
+                  className={`btn-icon${copied ? ' success' : ''}`}
+                  onClick={copyToClipboard}
+                  title="클립보드에 복사"
+                >
+                  {copied
+                    ? <><CheckCircle2 style={{ width: 13, height: 13 }} /> 복사됨</>
+                    : <><Copy style={{ width: 13, height: 13 }} /> 복사</>
+                  }
+                </button>
+                <div className="divider-v" />
+                <button className="btn-icon" onClick={downloadTxt} title="TXT 파일로 저장">
+                  <Download style={{ width: 13, height: 13 }} />
+                  {includeTimestamps ? '저장 (타임스탬프)' : '저장'}
+                </button>
               </div>
 
-              {/* ── 검색 섹션 ──────────────────────────────────────── */}
-              <div className="mt-6 space-y-3">
+              {/* 자막 텍스트 */}
+              <div className="transcript-scroll">
+                <p className="transcript-text">{transcript}</p>
+              </div>
 
-                {/* 검색어 입력창 + 검색 버튼
-                    flex-nowrap: 버튼이 줄 바꿈으로 내려가지 않도록 강제
-                    min-w-0: input-group이 찌그러져도 버튼이 밀리지 않음 */}
-                <div className="flex items-center gap-2 flex-nowrap">
-                  <div className="input-group flex-1 min-w-0">
-                    <Search className="w-5 h-5 text-gray-400 mr-2 flex-shrink-0" />
+              {/* 검색 */}
+              <div style={{ borderTop: '1px solid var(--border)', flexShrink: 0 }}>
+                <div className="search-wrap">
+                  <div className="search-field">
+                    <Search style={{ width: 14, height: 14, color: 'var(--text-muted)', flexShrink: 0 }} />
                     <input
                       type="text"
-                      placeholder="검색할 구문을 입력하세요..."
+                      placeholder="대사에서 검색..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                     />
+                    <button className="btn-search" onClick={handleSearch}>
+                      <Search style={{ width: 12, height: 12 }} /> 검색
+                    </button>
                   </div>
-                  <button
-                    onClick={handleSearch}
-                    className="btn-primary flex-shrink-0"
-                  >
-                    <Search className="w-4 h-4" />
-                    검색
-                  </button>
+                  {loopMode && searchResults.length > 0 && (
+                    <p style={{ margin: '0.4rem 0 0', fontSize: '0.7rem', color: 'var(--brand-light)' }}>
+                      결과 클릭 시 해당 구간부터 반복 재생
+                    </p>
+                  )}
                 </div>
 
-                {/* 검색 결과 목록 (AnimatePresence로 부드러운 등장/퇴장) */}
                 <AnimatePresence mode="sync">
-                  {/* 결과 목록 */}
                   {searchResults.length > 0 && (
                     <motion.div
-                      key="search-results"
+                      key="results"
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: 'auto' }}
                       exit={{ opacity: 0, height: 0 }}
-                      className="space-y-2"
+                      style={{ overflow: 'hidden' }}
                     >
-                      {/* 결과 개수 헤더 */}
-                      <h3 className="text-sm font-semibold text-gray-400 flex items-center gap-2">
-                        <Clock className="w-4 h-4" />
-                        검색 결과 ({searchResults.length}개)
-                        {loopMode && <span className="text-xs text-indigo-400 font-normal">— 클릭하면 해당 구간부터 반복 재생</span>}
-                      </h3>
-
-                      {/* 결과 카드 목록 */}
-                      <div className="max-h-72 overflow-y-auto space-y-1.5 pr-1">
+                      <div style={{
+                        padding: '0.4rem 1rem',
+                        fontSize: '0.7rem', color: 'var(--text-muted)',
+                        borderTop: '1px solid var(--border)',
+                        background: 'var(--surface-0)',
+                        display: 'flex', alignItems: 'center', gap: '0.3rem'
+                      }}>
+                        <Clock style={{ width: 11, height: 11 }} />
+                        {searchResults.length}개 결과
+                      </div>
+                      <div className="search-results-panel" style={{ maxHeight: 260 }}>
                         {searchResults.map((result, idx) => (
                           <motion.div
                             key={`${result.matchIndex}-${idx}`}
-                            initial={{ opacity: 0, x: -10 }}
+                            initial={{ opacity: 0, x: -8 }}
                             animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: Math.min(idx * 0.04, 0.3) }}
+                            transition={{ delay: Math.min(idx * 0.03, 0.25) }}
                             onClick={() => openYouTubeAtTime(result.matchIndex, result.segment.start)}
-                            className={`p-3 rounded-xl cursor-pointer transition-all border ${
-                              loopMode && loopConfig?.matchIndex === result.matchIndex
-                                ? 'bg-indigo-600/25 border-indigo-400/60 shadow-sm shadow-indigo-900/50'
-                                : 'bg-white/[0.06] hover:bg-white/[0.12] border-white/[0.08] hover:border-indigo-500/40'
-                            }`}
+                            className={`search-result-item${loopMode && loopConfig?.matchIndex === result.matchIndex ? ' playing' : ''}`}
                           >
-                            <div className="flex items-start gap-3">
-                              {/* 타임스탬프 배지 */}
-                              <div className="flex-shrink-0 px-2 py-1 bg-indigo-500/20 rounded text-indigo-400 text-xs font-mono">
-                                {formatTimestamp(result.segment.start)}
-                              </div>
-                              {/* 자막 텍스트 */}
-                              <p className="text-sm text-gray-300 flex-1">
-                                {result.segment.text}
-                              </p>
-                            </div>
+                            <span className="timestamp-badge">{formatTimestamp(result.segment.start)}</span>
+                            <p className="search-result-text">{result.segment.text}</p>
                           </motion.div>
                         ))}
                       </div>
                     </motion.div>
                   )}
 
-                  {/* 검색어가 있고 결과가 0개일 때: "없음" 안내 메시지 */}
                   {searchQuery && searchResults.length === 0 && segments.length > 0 && (
                     <motion.div
-                      key="no-results"
+                      key="no-result"
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
-                      className="p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg text-yellow-400 text-sm"
+                      style={{ padding: '0.75rem 1rem', fontSize: '0.8rem', color: 'var(--warning)', borderTop: '1px solid var(--border)' }}
                     >
-                      '{searchQuery}' 검색 결과가 없습니다.
+                      "{searchQuery}" 검색 결과가 없습니다.
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -1015,25 +1072,8 @@ function App() {
 
             </motion.div>
           )}
-        </AnimatePresence>
-
-        {/* ── 로딩 스피너 ──────────────────────────────────────────
-            백엔드 요청 중(loading=true)일 때만 표시 */}
-        {loading && (
-          <div className="mt-8 flex flex-col items-center gap-4 py-8">
-            {/* 바깥 링은 스핀, 안쪽엔 YouTube 아이콘 */}
-            <div className="relative">
-              <div className="w-16 h-16 border-4 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin"></div>
-              <div className="absolute inset-0 flex items-center justify-center">
-                <Youtube className="w-6 h-6 text-indigo-500" />
-              </div>
-            </div>
-            <p className="text-gray-400 animate-pulse">
-              AI가 영상을 분석하고 있습니다. 영상 길이에 따라 몇 분 정도 소요될 수 있습니다...
-            </p>
-          </div>
-        )}
-      </motion.div>
+        </main>
+      </div>
     </div>
   );
 }

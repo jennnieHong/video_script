@@ -367,6 +367,15 @@ function App() {
   const [isSeekMode, setIsSeekMode] = useState(false);                  // 선택지점부터 재생 모드 (각 세그먼트에 ▶ 버튼 표시)
   const [showTranslation, setShowTranslation] = useState(false);         // 발음 자막 편집 패널 표시
   const [translations, setTranslations] = useState<Record<number, string>>({}); // 세그먼트별 발음 텍스트
+  const [clipQuality, setClipQuality] = useState<'360'|'480'|'720'|'1080'|'best'|'vertical'>('720'); // 클립 다운로드 해상도
+  const [burnSubs,   setBurnSubs]   = useState(false);                    // 자막 굽기 모드
+  const [subStyle,   setSubStyle]   = useState({                          // 자막 스타일
+    fontSize: 28,
+    bold: true,
+    color: 'white' as 'white'|'yellow'|'black',
+    position: 'bottom' as 'top'|'middle'|'bottom',
+    background: false,
+  });
   const [showSaveOptions, setShowSaveOptions] = useState(false);         // 저장 옵션 드롭다운 표시 여부
   const saveOptionsRef = useRef<HTMLDivElement>(null);                   // 저장 옵션 드롭다운 DOM ref (외부 클릭 감지)
 // ─── 언어 목록 조회 ────────────────────────────────────────────
@@ -1715,6 +1724,201 @@ function App() {
                             onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.min(c.endOffset + 1, segments.length - 1 - c.matchIndex) } : null)}
                             disabled={loopSegment.endSegIdx >= segments.length - 1}
                           >▶</button>
+                        </div>
+
+                        {/* ── 클립 다운로드 패널 ──────────────────────────── */}
+                        <div style={{ marginTop: '0.5rem', borderTop: '1px solid var(--border)', paddingTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+
+                          {/* Row 1: 해상도 + 자막굽기 토글 */}
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            <select
+                              value={clipQuality}
+                              onChange={(e) => setClipQuality(e.target.value as typeof clipQuality)}
+                              style={{ fontSize: '0.72rem', padding: '0.2rem 0.4rem', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-primary)', cursor: 'pointer' }}
+                              title="다운로드 해상도 선택"
+                            >
+                              <option value="360">360p</option>
+                              <option value="480">480p</option>
+                              <option value="720">720p</option>
+                              <option value="1080">1080p</option>
+                              <option value="best">최고화질</option>
+                              <option value="vertical">📱 세로(쇼츠/릴스)</option>
+                            </select>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.72rem', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
+                              <input
+                                type="checkbox"
+                                checked={burnSubs}
+                                onChange={(e) => setBurnSubs(e.target.checked)}
+                                style={{ accentColor: 'var(--accent)', width: 13, height: 13 }}
+                              />
+                              🔥 자막 굽기
+                            </label>
+                          </div>
+
+                          {/* Row 2: 자막 스타일 설정 패널 */}
+                          {burnSubs && (
+                            <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '0.5rem 0.6rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                              <div style={{ fontSize: '0.68rem', color: 'var(--text-tertiary)', fontWeight: 600, letterSpacing: '0.05em' }}>자막 스타일</div>
+
+                              {/* 폰트 크기 + 위치 */}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                                  크기
+                                  <input
+                                    type="range" min={16} max={48} step={2}
+                                    value={subStyle.fontSize}
+                                    onChange={(e) => setSubStyle(s => ({ ...s, fontSize: Number(e.target.value) }))}
+                                    style={{ width: 70, accentColor: 'var(--accent)' }}
+                                  />
+                                  <span style={{ fontSize: '0.68rem', minWidth: 24 }}>{subStyle.fontSize}</span>
+                                </label>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                                  위치
+                                  <select
+                                    value={subStyle.position}
+                                    onChange={(e) => setSubStyle(s => ({ ...s, position: e.target.value as typeof s.position }))}
+                                    style={{ fontSize: '0.7rem', padding: '0.1rem 0.3rem', background: 'var(--surface-3)', border: '1px solid var(--border)', borderRadius: 3, color: 'var(--text-primary)' }}
+                                  >
+                                    <option value="top">상단</option>
+                                    <option value="middle">중앙</option>
+                                    <option value="bottom">하단</option>
+                                  </select>
+                                </label>
+                              </div>
+
+                              {/* 색상 + 옵션 */}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                                <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>색상</span>
+                                {(['white', 'yellow', 'black'] as const).map(c => (
+                                  <button key={c} onClick={() => setSubStyle(s => ({ ...s, color: c }))}
+                                    style={{
+                                      width: 20, height: 20, borderRadius: '50%', border: `2px solid ${subStyle.color === c ? 'var(--accent)' : 'var(--border)'}`,
+                                      background: c === 'white' ? '#fff' : c === 'yellow' ? '#ffff00' : '#111',
+                                      cursor: 'pointer', flexShrink: 0,
+                                    }}
+                                    title={c === 'white' ? '흰색' : c === 'yellow' ? '노란색' : '검정'}
+                                  />
+                                ))}
+                                <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem', cursor: 'pointer' }}>
+                                  <input type="checkbox" checked={subStyle.bold} onChange={(e) => setSubStyle(s => ({ ...s, bold: e.target.checked }))} style={{ accentColor: 'var(--accent)', width: 12, height: 12 }} />
+                                  굵게
+                                </label>
+                                <label style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem', cursor: 'pointer' }}>
+                                  <input type="checkbox" checked={subStyle.background} onChange={(e) => setSubStyle(s => ({ ...s, background: e.target.checked }))} style={{ accentColor: 'var(--accent)', width: 12, height: 12 }} />
+                                  배경박스
+                                </label>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Row 3: 다운로드 버튼들 */}
+                          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.4rem' }}>
+                            {/* 일반 클립 다운로드 */}
+                            <button
+                              className="btn-icon"
+                              style={{ fontSize: '0.72rem', gap: '0.3rem' }}
+                              title={`${formatTimestamp(loopSegment.start)} ~ ${formatTimestamp(loopSegment.end)} 구간 MP4 다운로드`}
+                              onClick={async () => {
+                                const filename = `clip_${videoId}_${Math.floor(loopSegment.start)}s-${Math.floor(loopSegment.end)}s.mp4`;
+                                const clipBody = {
+                                  url: `https://www.youtube.com/watch?v=${videoId}`,
+                                  start: loopSegment.start,
+                                  end: loopSegment.end,
+                                  quality: clipQuality,
+                                };
+                                const clipUrl = `http://localhost:8000/clip`;
+                                // showSaveFilePicker: 버튼 클릭 시점(사용자 제스처) 안에서 즉시 호출
+                                // → 이후 fetch가 얼마나 걸려도 파일 쓰기 허용됨
+                                if ('showSaveFilePicker' in window) {
+                                  try {
+                                    const fh = await (window as any).showSaveFilePicker({ suggestedName: filename, types: [{ description: 'MP4', accept: { 'video/mp4': ['.mp4'] } }] });
+                                    alert('클립을 준비 중입니다. 완료되면 자동으로 저장됩니다 (수십 초 소요).');
+                                    const res = await fetch(clipUrl, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify(clipBody),
+                                    });
+                                    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
+                                    const w = await fh.createWritable();
+                                    await res.body!.pipeTo(w);
+                                    alert('클립 저장 완료!');
+                                  } catch (e: any) { if (e?.name !== 'AbortError') alert(`클립 다운로드 실패: ${e.message}`); }
+                                } else {
+                                  // showSaveFilePicker 미지원 환경: blob으로 받아서 a태그 클릭
+                                  try {
+                                    alert('클립을 준비 중입니다. 완료되면 자동으로 저장됩니다 (수십 초 소요).');
+                                    const res = await fetch(clipUrl, {
+                                      method: 'POST',
+                                      headers: { 'Content-Type': 'application/json' },
+                                      body: JSON.stringify(clipBody),
+                                    });
+                                    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
+                                    const blob = await res.blob();
+                                    const a = document.createElement('a');
+                                    a.href = URL.createObjectURL(blob);
+                                    a.download = filename;
+                                    a.click();
+                                    setTimeout(() => URL.revokeObjectURL(a.href), 100);
+                                  } catch (e: any) { alert(`클립 다운로드 실패: ${(e as any).message}`); }
+                                }
+                              }}
+                            >
+                              <Download style={{ width: 12, height: 12 }} />
+                              클립 ({formatTimestamp(loopSegment.start)}~{formatTimestamp(loopSegment.end)})
+                            </button>
+
+                            {/* 자막 굽기 다운로드 */}
+                            {burnSubs && (
+                              <button
+                                className="btn-icon"
+                                style={{ fontSize: '0.72rem', gap: '0.3rem', background: 'rgba(239,68,68,0.12)', borderColor: 'rgba(239,68,68,0.4)', color: 'var(--text-primary)' }}
+                                title="자막을 영상에 직접 구워서 저장"
+                                onClick={async () => {
+                                  // 선택된 구간의 세그먼트 → 클립 상대 시간으로 변환
+                                  const subSegs = [];
+                                  for (let si = loopSegment.startSegIdx; si <= loopSegment.endSegIdx; si++) {
+                                    const seg = segments[si];
+                                    const text = translations[si] || seg.text;
+                                    if (text.trim()) {
+                                      subSegs.push({
+                                        start: Math.max(0, seg.start - loopSegment.start),
+                                        end: Math.max(0, (seg.start + seg.duration) - loopSegment.start),
+                                        text: text.trim(),
+                                      });
+                                    }
+                                  }
+                                  if (subSegs.length === 0) { alert('자막 데이터가 없습니다. 발음 탭에서 자막을 입력하거나 자동변환을 실행하세요.'); return; }
+
+                                  const filename = `burned_${videoId}_${Math.floor(loopSegment.start)}s-${Math.floor(loopSegment.end)}s.mp4`;
+                                  if ('showSaveFilePicker' in window) {
+                                    try {
+                                      const fh = await (window as any).showSaveFilePicker({ suggestedName: filename, types: [{ description: 'MP4', accept: { 'video/mp4': ['.mp4'] } }] });
+                                      alert('자막을 굽고 있습니다. 완료되면 자동으로 저장됩니다 (수십 초~수분 소요).');
+                                      const res = await fetch('http://localhost:8000/clip-burn', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                          url: `https://www.youtube.com/watch?v=${videoId}`,
+                                          start: loopSegment.start,
+                                          end: loopSegment.end,
+                                          quality: clipQuality,
+                                          subtitle_segments: subSegs,
+                                          style: subStyle,
+                                        }),
+                                      });
+                                      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
+                                      const w = await fh.createWritable();
+                                      await res.body!.pipeTo(w);
+                                      alert('자막 굽기 완료!');
+                                    } catch (e: any) { if (e?.name !== 'AbortError') alert(`자막 굽기 실패: ${e.message}`); }
+                                  } else { alert('이 브라우저는 파일 저장 대화상자를 지원하지 않습니다.'); }
+                                }}
+                              >
+                                🔥 자막 굽기
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </motion.div>

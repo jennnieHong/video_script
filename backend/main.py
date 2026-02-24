@@ -274,6 +274,313 @@ async def transcribe(request: TranscribeRequest):
         raise HTTPException(status_code=500, detail=f"대사 추출에 실패했습니다: {str(e)}")
 
 
+# ─── 클립 다운로드 엔드포인트 ────────────────────────────────────
+from fastapi.responses import FileResponse
+from fastapi import BackgroundTasks
+import subprocess
+import glob
+
+class ClipRequest(BaseModel):
+    url: str
+    start: float     # 시작 시간 (초)
+    end: float        # 종료 시간 (초)
+    quality: str = "720"  # 360|480|720|1080|best|vertical
+
+@app.post("/clip")
+async def download_clip(request: ClipRequest, background_tasks: BackgroundTasks):
+    url = request.url
+    start = request.start
+    end = request.end
+    quality = request.quality
+    """
+    YouTube 영상의 특정 구간을 MP4 파일로 다운로드합니다. (POST)
+    body: { url, start, end, quality }
+    quality: 360 | 480 | 720 | 1080 | best | vertical
+    """
+    video_id = extract_video_id(url)
+    request_url = url
+    if not video_id:
+        raise HTTPException(status_code=400, detail="유효한 유튜브 URL이 아닙니다.")
+
+    if end <= start:
+        raise HTTPException(status_code=400, detail="종료 시간이 시작 시간보다 커야 합니다.")
+
+    temp_dir = tempfile.mkdtemp()
+    raw_path = os.path.join(temp_dir, f"raw_{video_id}.mp4")
+    clip_path = os.path.join(temp_dir, f"clip_{video_id}_{int(start)}s-{int(end)}s.mp4")
+
+    try:
+        # ── 1단계: yt-dlp로 영상 다운로드 (전체) ───────────────────
+        # quality 파라미터에 따른 yt-dlp format 문자열 생성
+        QUALITY_MAP = {
+            '360':  'best[height<=360][ext=mp4]/best[height<=360]/bestvideo[height<=360][ext=mp4]+bestaudio/best',
+            '480':  'best[height<=480][ext=mp4]/best[height<=480]/bestvideo[height<=480][ext=mp4]+bestaudio/best',
+            '720':  'best[height<=720][ext=mp4]/best[height<=720]/bestvideo[height<=720][ext=mp4]+bestaudio/best',
+            '1080': 'best[height<=1080][ext=mp4]/best[height<=1080]/bestvideo[height<=1080][ext=mp4]+bestaudio/best',
+            'best': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+        }
+        fmt = QUALITY_MAP.get(quality, QUALITY_MAP['720'])
+        ydl_opts = {
+            'format': fmt,
+            'outtmpl': raw_path,
+            'quiet': True,
+            'no_warnings': True,
+        }
+        if FFMPEG_PATH:
+            ydl_opts['ffmpeg_location'] = os.path.dirname(FFMPEG_PATH)
+
+        logger.info(f"🎬 영상 다운로드 시작: {video_id}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([request_url])
+
+        # yt-dlp가 실제로 저장한 파일 찾기 (확장자가 다를 수 있음)
+        if not os.path.exists(raw_path):
+            candidates = glob.glob(os.path.join(temp_dir, f"raw_{video_id}.*"))
+            if not candidates:
+                raise FileNotFoundError("다운로드된 영상 파일을 찾을 수 없습니다.")
+            raw_path = candidates[0]
+
+        # ── 2단계: ffmpeg로 구간 자르기 ─────────────────────────────
+        duration = end - start
+        ffmpeg_exe = FFMPEG_PATH if FFMPEG_PATH else "ffmpeg"
+
+        if quality == "vertical":
+            # 📱 세로 영상 (9:16) 변환
+            # crop=ih*9/16:ih  → 세로 기준으로 가운데 크롭 (가로 여백 제거)
+            # 세로 크롭은 픽셀 재계산이 필요하므로 재인코딩 필수 (copy 불가)
+            logger.info(f"📱 세로 영상 변환 포함: crop=9:16")
+            cmd = [
+                ffmpeg_exe,
+                "-y",
+                "-ss", str(start),
+                "-i", raw_path,
+                "-t", str(duration),
+                "-vf", "crop=ih*9/16:ih",   # 9:16 비율로 가운데 크롭
+                "-c:v", "libx264",           # 재인코딩 (크롭은 copy 불가)
+                "-crf", "23",                # 화질 (18=고화질, 28=저화질, 23=기본)
+                "-preset", "fast",
+                "-c:a", "aac",
+                "-avoid_negative_ts", "make_zero",
+                clip_path,
+            ]
+        else:
+            # 일반 구간 자르기 (재인코딩 없음 → 빠름)
+            cmd = [
+                ffmpeg_exe,
+                "-y",
+                "-ss", str(start),
+                "-i", raw_path,
+                "-t", str(duration),
+                "-c:v", "copy",
+                "-c:a", "copy",
+                "-avoid_negative_ts", "make_zero",
+                clip_path,
+            ]
+
+        logger.info(f"✂️ ffmpeg 구간 자르기: {start}s ~ {end}s")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if result.returncode != 0:
+            logger.error(f"ffmpeg stderr: {result.stderr}")
+            raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+
+        if not os.path.exists(clip_path) or os.path.getsize(clip_path) == 0:
+            raise FileNotFoundError("클립 파일이 생성되지 않았습니다.")
+
+        filename = f"clip_{video_id}_{int(start)}s-{int(end)}s.mp4"
+        logger.info(f"✅ 클립 생성 완료: {filename} ({os.path.getsize(clip_path) / 1024 / 1024:.1f}MB)")
+
+        def cleanup():
+            import shutil
+            try:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+        background_tasks.add_task(cleanup)
+
+        return FileResponse(
+            clip_path,
+            media_type="video/mp4",
+            filename=filename,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    except FileNotFoundError as e:
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.error(f"❌ 클립 다운로드 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"클립 다운로드에 실패했습니다: {str(e)}")
+
+
+# ─── 자막 굽기 엔드포인트 ─────────────────────────────────────
+from typing import List as TypingList
+
+class SubtitleSegmentModel(BaseModel):
+    start: float    # 클립 내 상대 시간 (초)
+    end: float
+    text: str
+
+class SubtitleStyleModel(BaseModel):
+    fontSize: int = 28
+    bold: bool = True
+    color: str = "white"       # white | yellow | black
+    position: str = "bottom"   # top | middle | bottom
+    background: bool = False
+
+class BurnSubsRequest(BaseModel):
+    url: str
+    start: float
+    end: float
+    quality: str = "720"       # 360|480|720|1080|best|vertical
+    subtitle_segments: TypingList[SubtitleSegmentModel]
+    style: SubtitleStyleModel = SubtitleStyleModel()
+
+def _srt_time(s: float) -> str:
+    h = int(s // 3600)
+    m = int((s % 3600) // 60)
+    sec = s % 60
+    ms = int((sec % 1) * 1000)
+    return f"{h:02d}:{m:02d}:{int(sec):02d},{ms:03d}"
+
+@app.post("/clip-burn")
+async def clip_with_burned_subs(request: BurnSubsRequest, background_tasks: BackgroundTasks):
+    """
+    구간을 자르고 자막을 영상에 직접 구워 MP4로 반환합니다.
+    - POST body: url, start, end, quality, subtitle_segments, style
+    """
+    video_id = extract_video_id(request.url)
+    if not video_id:
+        raise HTTPException(status_code=400, detail="유효한 유튜브 URL이 아닙니다.")
+    if request.end <= request.start:
+        raise HTTPException(status_code=400, detail="종료 시간이 시작 시간보다 커야 합니다.")
+    if not request.subtitle_segments:
+        raise HTTPException(status_code=400, detail="자막 데이터가 없습니다.")
+
+    temp_dir = tempfile.mkdtemp()
+    raw_path  = os.path.join(temp_dir, f"raw_{video_id}.mp4")
+    srt_path  = os.path.join(temp_dir, "subs.srt")
+    clip_path = os.path.join(temp_dir, f"burned_{video_id}_{int(request.start)}s-{int(request.end)}s.mp4")
+
+    try:
+        # ── 1단계: SRT 파일 생성 ──────────────────────────────────
+        srt_lines = []
+        for i, seg in enumerate(request.subtitle_segments, 1):
+            if seg.text.strip():
+                srt_lines.append(
+                    f"{i}\n{_srt_time(seg.start)} --> {_srt_time(seg.end)}\n{seg.text.strip()}\n"
+                )
+        with open(srt_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(srt_lines))
+        logger.info(f"📝 SRT 생성: {len(srt_lines)}개 자막")
+
+        # ── 2단계: yt-dlp 다운로드 ───────────────────────────────
+        q = request.quality if request.quality != "vertical" else "720"
+        QMAP = {
+            "360":  "best[height<=360][ext=mp4]/best[height<=360]/best",
+            "480":  "best[height<=480][ext=mp4]/best[height<=480]/best",
+            "720":  "best[height<=720][ext=mp4]/best[height<=720]/best",
+            "1080": "best[height<=1080][ext=mp4]/best[height<=1080]/best",
+            "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+        }
+        ydl_opts = {
+            "format": QMAP.get(q, QMAP["720"]),
+            "outtmpl": raw_path,
+            "quiet": True,
+            "no_warnings": True,
+        }
+        if FFMPEG_PATH:
+            ydl_opts["ffmpeg_location"] = os.path.dirname(FFMPEG_PATH)
+
+        logger.info(f"🎬 영상 다운로드 시작: {video_id}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([request.url])
+
+        if not os.path.exists(raw_path):
+            candidates = glob.glob(os.path.join(temp_dir, f"raw_{video_id}.*"))
+            if not candidates:
+                raise FileNotFoundError("다운로드된 영상 파일을 찾을 수 없습니다.")
+            raw_path = candidates[0]
+
+        # ── 3단계: ffmpeg 자막 굽기 ──────────────────────────────
+        st = request.style
+        # ffmpeg ASS 색상 형식: &HAABBGGRR (알파=00 불투명)
+        COLOR_MAP   = {"white": "&H00FFFFFF", "yellow": "&H0000FFFF", "black": "&H00000000"}
+        OUTLINE_MAP = {"white": "&H00000000", "yellow": "&H00000000", "black": "&H00FFFFFF"}
+        ALIGN_MAP   = {"top": 8, "middle": 5, "bottom": 2}
+
+        color       = COLOR_MAP.get(st.color, "&H00FFFFFF")
+        outline_col = OUTLINE_MAP.get(st.color, "&H00000000")
+        alignment   = ALIGN_MAP.get(st.position, 2)
+        bold        = 1 if st.bold else 0
+        border_style = 4 if st.background else 1
+
+        force_style = (
+            f"FontSize={st.fontSize},Bold={bold},"
+            f"PrimaryColour={color},OutlineColour={outline_col},"
+            f"Outline=2,Shadow=0,Alignment={alignment},MarginV=25,"
+            f"BorderStyle={border_style}"
+        )
+        if st.background:
+            force_style += ",BackColour=&H80000000"
+
+        # Windows 경로에서 ffmpeg subtitles 필터용 이스케이프
+        srt_esc = srt_path.replace("\\", "/").replace(":", "\\:")
+
+        # vf 필터 조합 (세로 크롭 → 자막 순서)
+        vf_filters = []
+        if request.quality == "vertical":
+            vf_filters.append("crop=ih*9/16:ih")
+        vf_filters.append(f"subtitles='{srt_esc}':force_style='{force_style}'")
+        vf = ",".join(vf_filters)
+
+        ffmpeg_exe = FFMPEG_PATH if FFMPEG_PATH else "ffmpeg"
+        duration   = request.end - request.start
+
+        cmd = [
+            ffmpeg_exe, "-y",
+            "-ss", str(request.start),
+            "-i", raw_path,
+            "-t", str(duration),
+            "-vf", vf,
+            "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+            "-c:a", "aac",
+            "-avoid_negative_ts", "make_zero",
+            clip_path,
+        ]
+
+        logger.info(f"🔥 자막 굽기 시작 | 폰트={st.fontSize} 위치={st.position} 색={st.color}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            logger.error(f"ffmpeg stderr: {result.stderr[-500:]}")
+            raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+
+        if not os.path.exists(clip_path) or os.path.getsize(clip_path) == 0:
+            raise FileNotFoundError("클립 파일이 생성되지 않았습니다.")
+
+        filename = f"burned_{video_id}_{int(request.start)}s-{int(request.end)}s.mp4"
+        logger.info(f"✅ 자막 굽기 완료: {filename} ({os.path.getsize(clip_path)/1024/1024:.1f}MB)")
+
+        def cleanup():
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        background_tasks.add_task(cleanup)
+        return FileResponse(
+            clip_path, media_type="video/mp4", filename=filename,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    except Exception as e:
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.error(f"❌ 자막 굽기 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"자막 굽기에 실패했습니다: {str(e)}")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)

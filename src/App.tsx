@@ -16,6 +16,10 @@ import { Youtube, Send, Copy, Download, Loader2, FileText, CheckCircle2, Search,
 import { motion, AnimatePresence } from 'framer-motion';
 // axios: HTTP 클라이언트 (백엔드 API 호출)
 import axios from 'axios';
+// @romanize/korean: 한글 → 로마자 음역
+import { romanize } from '@romanize/korean';
+// engToKor: 영어 → 한글 발음 변환
+import { englishToKorean } from './engToKor';
 
 // ─── 전역 타입 선언 ────────────────────────────────────────────────
 // YouTube IFrame API는 window.YT 전역 객체를 통해 제공됨
@@ -1755,14 +1759,42 @@ function App() {
                   발음
                 </button>
                 {showTranslation && (
-                  <button
-                    className="btn-icon"
-                    onClick={downloadSrt}
-                    title="SRT 발음 자막 내보내기"
-                  >
-                    <Download style={{ width: 13, height: 13 }} />
-                    SRT
-                  </button>
+                  <>
+                    <button
+                      className="btn-icon"
+                      onClick={() => {
+                        const result: Record<number, string> = {};
+                        segments.forEach((seg, i) => {
+                          result[i] = romanize(seg.text.trim());
+                        });
+                        setTranslations(result);
+                      }}
+                      title="한글 → 로마자 자동 변환"
+                    >
+                      한→영
+                    </button>
+                    <button
+                      className="btn-icon"
+                      onClick={() => {
+                        const result: Record<number, string> = {};
+                        segments.forEach((seg, i) => {
+                          result[i] = englishToKorean(seg.text.trim());
+                        });
+                        setTranslations(result);
+                      }}
+                      title="영어 → 한글 발음 자동 변환"
+                    >
+                      영→한
+                    </button>
+                    <button
+                      className="btn-icon"
+                      onClick={downloadSrt}
+                      title="SRT 발음 자막 내보내기"
+                    >
+                      <Download style={{ width: 13, height: 13 }} />
+                      SRT
+                    </button>
+                  </>
                 )}
                 <div className="divider-v" />
                 {/* 저장 옵션 드롭다운 */}

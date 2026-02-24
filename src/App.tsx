@@ -50,7 +50,7 @@ function LoopPlayer({
   onClose,
   formatTimestamp,
   onPlayerReady,
-  isLooping = true,
+  playbackMode = 'loop',
 }: {
   videoId: string;
   start: number;
@@ -58,7 +58,7 @@ function LoopPlayer({
   onClose: () => void;
   formatTimestamp: (s: number) => string;
   onPlayerReady?: (player: any) => void;
-  isLooping?: boolean;
+  playbackMode?: 'loop' | 'once' | 'none';
 }) {
   // YouTube IFrame API가 교체할 실제 DOM div를 참조
   const containerRef = useRef<HTMLDivElement>(null);
@@ -75,57 +75,67 @@ function LoopPlayer({
 
     // start/end props가 바뀌면 ref만 업데이트 (플레이어 재생성 없음)
   useEffect(() => {
+    const prevStart = startRef.current;
     startRef.current = start;
     endRef.current = end;
 
-    if (!isLooping) return; // 루프 모드가 아니면 seekTo 자동 실행 방지
-
-    // 현재 재생 위치가 새 구간 밖으로 벗어났으면 start로 즉시 점프
     const player = playerRef.current;
     if (player?.getCurrentTime) {
       const t = player.getCurrentTime();
-      if (t < start || t >= end) {
+      // (1) 새로운 구간 클릭 시 점프 (2) 루프 모드인데 범위를 벗어났을 때 점프
+      const isNewClick = start !== prevStart;
+      const isOutOfBounds = playbackMode === 'loop' && (t < start || t >= end);
+
+      if (isNewClick || isOutOfBounds) {
         player.seekTo(start, true);
         player.playVideo();
       }
     }
-  }, [start, end, isLooping]);
+  }, [start, end, playbackMode]);
 
-  // 플레이어 생성은 videoId가 처음 마운트될 때 한 번만 (start/end 변경 시에는 재생성 안 함)
+  // ── 구간 감시 인터벌 관리 ──────────────────────────────────
+  // playbackMode, start, end 중 하나라도 바뀌면 기존 인터벌을 끄고 새로 시작 (새 클릭 대응)
+  useEffect(() => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    if (playbackMode === 'none') return;
+
+    intervalRef.current = setInterval(() => {
+      const player = playerRef.current;
+      if (!player?.getCurrentTime) return;
+
+      const currentTime = player.getCurrentTime();
+      const state = player.getPlayerState?.();
+      const s = startRef.current;
+      const e = endRef.current;
+
+      // 안전 장치: 시작/종료 시간이 같거나 음수면 체크 건너뜀 (렉 방지)
+      if (e <= s || e <= 0.1) return;
+
+      // 구간 종료 감지 (0.1s 여유)
+      if (currentTime >= e - 0.1 || state === 0) {
+        if (playbackMode === 'loop') {
+          player.seekTo(s, true);
+          player.playVideo();
+        } else if (playbackMode === 'once') {
+          player.pauseVideo();
+          player.seekTo(e, true); 
+          // 1번 재생이 끝나면 이 인터벌을 종료하여 불필요한 체크 방지
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+          }
+        }
+      }
+    }, 150);
+
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [playbackMode, start, end]); // 의존성 추가: 새 클릭 시 인터벌 리셋
+
+  // ── YT.Player 인스턴스 생성 ───────────────────────────────
   useEffect(() => {
     let destroyed = false;
-
-    // ── 구간 감시 인터벌 시작 ──────────────────────────────────
-    // ref를 통해 항상 최신 start/end를 읽으므로 실시간 구간 조정이 즉시 반영됨
-    const startInterval = () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-      if (!isLooping) return; // 루프 중이 아니면 인터벌 시작 안 함
-
-      intervalRef.current = setInterval(() => {
-        const player = playerRef.current;
-        if (!player?.getCurrentTime) return;
-
-        const currentTime = player.getCurrentTime();
-        const state = player.getPlayerState?.();
-        // YT.PlayerState 상수:
-        //   -1 = 시작안됨, 0 = 종료, 1 = 재생 중, 2 = 일시정지, 3 = 버퍼링, 5 = 큐됨
-
-        // ref에서 최신 start/end 읽기 (클로저 캡처 문제 없음)
-        const s = startRef.current;
-        const e = endRef.current;
-
-        // 구간 종료 조건:
-        //   (1) 현재 시간이 end 이상 → 구간 끝, start로 되돌림
-        //   (2) 영상이 자연 종료됨 (state=0)
-        //   (3) 일시정지 상태이고 end에 근접 (playerVars.end 없이 interval로만 제어하는 경우)
-        if (currentTime >= e || state === 0 || (state === 2 && currentTime >= e - 0.5)) {
-          player.seekTo(s, true); // 항상 최신 start ref로 이동 (true = preciseSeeking)
-          player.playVideo();
-        }
-      }, 150); // 150ms마다 체크 (너무 짧으면 과부하, 너무 길면 부정확)
-    };
-
-    // ── YT.Player 인스턴스 생성 ───────────────────────────────
     const createPlayer = () => {
       if (destroyed || !containerRef.current) return;
 
@@ -141,12 +151,11 @@ function LoopPlayer({
           onReady: (e: any) => {
             e.target.seekTo(startRef.current, true);
             e.target.playVideo();
-            startInterval();
             onPlayerReady?.(e.target); // App으로 YT.Player 인스턴스 공유
           },
           onStateChange: (e: any) => {
-            // 영상이 자연 종료(state=0)된 경우에도 즉시 start로 되돌려 재생
-            if (e.data === 0) {
+            // 영상이 자연 종료(state=0)된 경우: 반복 재생 모드일 때만 처음으로 되돌림
+            if (e.data === 0 && playbackMode === 'loop') {
               e.target.seekTo(startRef.current, true);
               e.target.playVideo();
             }
@@ -184,18 +193,43 @@ function LoopPlayer({
   // ── LoopPlayer 렌더링 ──────────────────────────────────────────
   return (
     <div className="loop-player-wrap">
-      {/* 상단 상태 표시줄: 현재 반복 구간과 닫기 버튼 (루프 인 경우에만 표시) */}
-      {isLooping && (
-        <div className="loop-player-bar">
-          <span className="loop-player-label">
-            <RotateCcw style={{ width: 13, height: 13, animation: 'spin 2s linear infinite', flexShrink: 0 }} />
-            구간 반복 중: {formatTimestamp(start)} ~ {formatTimestamp(end)}
-          </span>
-          <button className="loop-player-close" onClick={onClose}>✕ 닫기</button>
-        </div>
-      )}
-      {/* YouTube IFrame API가 이 div 요소를 실제 <iframe>으로 교체 */}
-      <div ref={containerRef} className="loop-player-frame" />
+      {/* 상단 상태 표시줄: 루프 인 경우에만 표시 (영상 레이어 위에 띄움) */}
+      <AnimatePresence>
+        {playbackMode === 'loop' && (
+          <motion.div 
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="loop-player-bar"
+          >
+            <span className="loop-player-label">
+              <RotateCcw style={{ width: 13, height: 13, animation: 'spin 2s linear infinite', flexShrink: 0 }} />
+              구간 반복 중: {formatTimestamp(start)} ~ {formatTimestamp(end)}
+            </span>
+            <button className="loop-player-close" onClick={onClose}>✕ 닫기</button>
+          </motion.div>
+        )}
+        {playbackMode === 'once' && (
+          <motion.div 
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="loop-player-bar once"
+            style={{ background: 'rgba(34, 197, 94, 0.85)' }} // 1번 재생은 초록색 계열로 구분
+          >
+            <span className="loop-player-label">
+              <svg style={{ width: 13, height: 13, flexShrink: 0 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              1번 재생 모드 (구간 종료 시 중지)
+            </span>
+            <button className="loop-player-close" onClick={onClose}>✕ 닫기</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* YouTube IFrame API가 교체할 노드 - 별도 컨테이너로 격리하여 React의 DOM 조작과 충돌 방지 */}
+      <div className="player-stage">
+        <div ref={containerRef} className="loop-player-frame" />
+      </div>
     </div>
   );
 }
@@ -250,13 +284,14 @@ function App() {
   // - 'play': 해당 구간 재생
   const [interactionMode, setInteractionMode] = useState<'search' | 'play'>('search');
 
-  // playbackOption: 'play' 모드일 때 재생 방식 ('loop' | 'popup')
-  // - 'loop': 앱 내 플레이어로 구간 반복
+  // playbackOption: 'play' 모드일 때 재생 방식 ('loop' | 'once' | 'popup')
+  // - 'loop': 앱 내 플레이어로 구간 무한 반복
+  // - 'once': 앱 내 플레이어로 해당 구간만 1번 재생 후 멈춤
   // - 'popup': 새 창에서 해당 시간대 열기
-  const [playbackOption, setPlaybackOption] = useState<'loop' | 'popup'>('loop');
+  const [playbackOption, setPlaybackOption] = useState<'loop' | 'once' | 'popup'>('loop');
 
-  // loopMode: 기존 boolean 하위 호환 및 UI 상태 관리를 위해 interactionMode === 'play' && playbackOption === 'loop' 인 경우로 계산
-  const loopMode = interactionMode === 'play' && playbackOption === 'loop';
+  // loopMode: 앱 내 플레이어를 표시해야 하는 상태인지 여부 (loop 또는 once)
+  const loopMode = interactionMode === 'play' && (playbackOption === 'loop' || playbackOption === 'once');
 
   // loopConfig: 구간반복 모드에서 현재 재생 중인 구간 설정
   //   - 클릭 즉시 설정되어 LoopPlayer가 바로 시작됨
@@ -573,13 +608,14 @@ function App() {
     loopRange?: { startIdx: number; endIdx: number },
   ) => {
     if (interactionMode === 'play') {
-      if (playbackOption === 'loop') {
+      // 'loop' 또는 'once' 모드이면 앱 내 플레이어(LoopPlayer) 사용
+      if (playbackOption === 'loop' || playbackOption === 'once') {
         const base     = loopRange?.startIdx ?? matchIndex;
         const endIdx   = loopRange?.endIdx   ?? matchIndex;
         const endOffset = Math.max(0, endIdx - base);
         setLoopConfig({ matchIndex: base, startOffset: 0, endOffset });
-        // 플레이어가 있는 상단으로 스크롤하지 않고 대본 위치 유지 (사용자 편의)
       } else {
+        // 'popup' 모드: 기존처럼 새 창에서 YouTube 열기
         const timeInSeconds = Math.floor(startTime);
         window.open(`https://www.youtube.com/watch?v=${videoId}&t=${timeInSeconds}s`, '_blank');
       }
@@ -683,10 +719,14 @@ function App() {
         startOffset: 0,
         endOffset: sorted[sorted.length - 1] - sorted[0],
       });
-      
       // 사용자 편의를 위해 자동으로 재생 모드 전환
       setInteractionMode('play');
-      setPlaybackOption('loop');
+      
+      // 이미 'once'나 'loop' 모드인 경우(동영상을 보는 모드)는 그대로 유지
+      // 새 창 팝업 모드이거나 초기화 상태인 경우에만 기본 장치인 'loop'로 전환
+      if (playbackOption === 'popup') {
+        setPlaybackOption('loop');
+      }
     }
   };
 
@@ -1198,6 +1238,18 @@ function App() {
                         <input
                           type="radio"
                           name="play-type"
+                          checked={playbackOption === 'once'}
+                          onChange={() => setPlaybackOption('once')}
+                        />
+                        <span className="play-opt-box">
+                          <svg style={{ width: 11, height: 11 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                          1번 재생
+                        </span>
+                      </label>
+                      <label className="play-opt">
+                        <input
+                          type="radio"
+                          name="play-type"
                           checked={playbackOption === 'popup'}
                           onChange={() => setPlaybackOption('popup')}
                         />
@@ -1276,7 +1328,9 @@ function App() {
                                 const endOffset = Math.max(0, result.loopEndIdx - base);
                                 setLoopConfig({ matchIndex: base, startOffset: 0, endOffset });
                                 setInteractionMode('play');
-                                setPlaybackOption('loop');
+                                if (playbackOption === 'popup') {
+                                  setPlaybackOption('loop');
+                                }
                               }}
                             >
                               <RotateCcw style={{ width: 12, height: 12 }} />
@@ -1340,63 +1394,81 @@ function App() {
               animate={{ opacity: 1 }}
               style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
             >
-              {/* 비디오 플레이어 영역 (검색모드에서도 상시 노출) */}
-              {videoId && (
-                <div className="video-section">
-                  <LoopPlayer
-                    videoId={videoId}
-                    start={loopSegment?.start ?? 0}
-                    end={loopSegment?.end ?? 0}
-                    isLooping={loopMode && !!loopConfig}
-                    onClose={() => setLoopConfig(null)}
-                    formatTimestamp={formatTimestamp}
-                    onPlayerReady={(player) => { loopPlayerRef.current = player; }}
-                  />
+              {/* 비디오 및 컨트롤 레이아웃 컨테이너 */}
+              <div className="video-and-controls">
+                {videoId && (
+                  <div className="video-section">
+                    <LoopPlayer
+                      key={`player-${videoId}`}
+                      videoId={videoId}
+                      start={loopSegment?.start ?? 0}
+                      end={loopSegment?.end ?? 0}
+                      playbackMode={
+                        !loopMode ? 'none' : 
+                        (playbackOption === 'once' ? 'once' : 'loop')
+                      }
+                      onClose={() => setLoopConfig(null)}
+                      formatTimestamp={formatTimestamp}
+                      onPlayerReady={(player) => { loopPlayerRef.current = player; }}
+                    />
+                  </div>
+                )}
+                
+                <AnimatePresence>
                   {loopMode && loopConfig && loopSegment && (
-                    <div className="loop-controls">
-                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                        <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--brand-light)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                          구간 실시간 조정
-                        </span>
-                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                          {formatTimestamp(loopSegment.start)} ~ {formatTimestamp(loopSegment.end)}
-                          &nbsp;({Math.floor(loopSegment.end - loopSegment.start)}s)
-                        </span>
-                      </div>
-                      <div className="loop-ctrl-row" style={{ marginBottom: '0.375rem' }}>
-                        <span className="loop-ctrl-label">시작</span>
-                        <button className="btn-loop-step"
-                          onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.min(c.startOffset + 1, c.matchIndex) } : null)}
-                          disabled={loopSegment.startSegIdx === 0}
-                        >◀</button>
-                        <div className="loop-ctrl-preview">
-                          <span className="loop-ctrl-time">{formatTimestamp(loopSegment.startSeg.start)}</span>
-                          <span className="loop-ctrl-text">{loopSegment.startSeg.text.trim()}</span>
+                    <motion.div 
+                      key="loop-controls"
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      exit={{ opacity: 0, height: 0 }}
+                      style={{ overflow: 'hidden' }}
+                      className="loop-controls-panel"
+                    >
+                      <div className="loop-controls">
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                          <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--brand-light)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                            구간 실시간 조정
+                          </span>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                            {formatTimestamp(loopSegment.start)} ~ {formatTimestamp(loopSegment.end)}
+                            &nbsp;({Math.floor(loopSegment.end - loopSegment.start)}s)
+                          </span>
                         </div>
-                        <button className="btn-loop-step"
-                          onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.max(0, c.startOffset - 1) } : null)}
-                          disabled={loopConfig.startOffset === 0}
-                        >▶</button>
-                      </div>
-                      <div className="loop-ctrl-row">
-                        <span className="loop-ctrl-label">종료</span>
-                        <button className="btn-loop-step"
-                          onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.max(0, c.endOffset - 1) } : null)}
-                          disabled={loopConfig.endOffset === 0}
-                        >◀</button>
-                        <div className="loop-ctrl-preview">
-                          <span className="loop-ctrl-time">{formatTimestamp(loopSegment.endSeg.start + loopSegment.endSeg.duration)}</span>
-                          <span className="loop-ctrl-text">{loopSegment.endSeg.text.trim()}</span>
+                        <div className="loop-ctrl-row" style={{ marginBottom: '0.375rem' }}>
+                          <span className="loop-ctrl-label">시작</span>
+                          <button className="btn-loop-step"
+                            onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.min(c.startOffset + 1, c.matchIndex) } : null)}
+                            disabled={loopSegment.startSegIdx === 0}
+                          >◀</button>
+                          <div className="loop-ctrl-preview">
+                            <span className="loop-ctrl-time">{formatTimestamp(loopSegment.startSeg.start)}</span>
+                            <span className="loop-ctrl-text">{loopSegment.startSeg.text.trim()}</span>
+                          </div>
+                          <button className="btn-loop-step"
+                            onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.max(0, c.startOffset - 1) } : null)}
+                            disabled={loopConfig.startOffset === 0}
+                          >▶</button>
                         </div>
-                        <button className="btn-loop-step"
-                          onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.min(c.endOffset + 1, segments.length - 1 - c.matchIndex) } : null)}
-                          disabled={loopSegment.endSegIdx >= segments.length - 1}
-                        >▶</button>
+                        <div className="loop-ctrl-row">
+                          <span className="loop-ctrl-label">종료</span>
+                          <button className="btn-loop-step"
+                            onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.max(0, c.endOffset - 1) } : null)}
+                            disabled={loopConfig.endOffset === 0}
+                          >◀</button>
+                          <div className="loop-ctrl-preview">
+                            <span className="loop-ctrl-time">{formatTimestamp(loopSegment.endSeg.start + loopSegment.endSeg.duration)}</span>
+                            <span className="loop-ctrl-text">{loopSegment.endSeg.text.trim()}</span>
+                          </div>
+                          <button className="btn-loop-step"
+                            onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.min(c.endOffset + 1, segments.length - 1 - c.matchIndex) } : null)}
+                            disabled={loopSegment.endSegIdx >= segments.length - 1}
+                          >▶</button>
+                        </div>
                       </div>
-                    </div>
+                    </motion.div>
                   )}
-                </div>
-              )}
+                </AnimatePresence>
+              </div>
 
               {/* 액션 바 */}
               <div className="action-bar">

@@ -747,33 +747,36 @@ function App() {
   const loopPlayerRef = useRef<any>(null); // LoopPlayer가 공유해주는 YT.Player ref
 
   useEffect(() => {
-    if (!loopMode || !loopConfig || segments.length === 0) {
+    // 트래킹 모드 꺼져 있거나 세그먼트 없으면 종료
+    if (!isTrackingMode || segments.length === 0) {
       setActiveSegIdx(-1);
       return;
     }
     const timer = setInterval(() => {
       const player = loopPlayerRef.current;
       if (!player?.getCurrentTime) return;
-      // 현재 시간에 사용자가 설정한 오프셋(초)을 더해 더 빠르게 반응하게 함
+
+      // 재생 중(state=1)인지 확인: 정지 상태에서는 스크롤 하지 않음
+      const state = player.getPlayerState?.();
+      if (state !== 1) return; // 1 = PLAYING
+
       const t = player.getCurrentTime() + trackingOffset;
-      
+
       let found = -1;
       for (let i = segments.length - 1; i >= 0; i--) {
         if (segments[i].start <= t) { found = i; break; }
       }
       if (found !== -1) {
         setActiveSegIdx(prev => {
-          if (prev !== found) {
-            if (isTrackingMode && dragStartIdx === null) {
-              segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-            }
+          if (prev !== found && dragStartIdx === null) {
+            segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
           }
           return found;
         });
       }
-    }, 50); // 200ms -> 50ms로 단축하여 반응성 강화
+    }, 50);
     return () => clearInterval(timer);
-  }, [loopMode, loopConfig, segments, isTrackingMode, dragStartIdx, trackingOffset]);
+  }, [segments, isTrackingMode, dragStartIdx, trackingOffset]);
 
   // ─── 검색어 키워드 하이라이트 헬퍼 ───────────────────────────
   // text를 query 기준으로 분리하여 <mark>로 감싼 React 노드 배열로 반환

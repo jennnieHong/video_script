@@ -50,6 +50,7 @@ function LoopPlayer({
   onClose,
   formatTimestamp,
   onPlayerReady,
+  isLooping = true,
 }: {
   videoId: string;
   start: number;
@@ -57,6 +58,7 @@ function LoopPlayer({
   onClose: () => void;
   formatTimestamp: (s: number) => string;
   onPlayerReady?: (player: any) => void;
+  isLooping?: boolean;
 }) {
   // YouTube IFrame API가 교체할 실제 DOM div를 참조
   const containerRef = useRef<HTMLDivElement>(null);
@@ -71,13 +73,14 @@ function LoopPlayer({
   const startRef = useRef(start);
   const endRef = useRef(end);
 
-  // start/end props가 바뀌면 ref만 업데이트 (플레이어 재생성 없음)
+    // start/end props가 바뀌면 ref만 업데이트 (플레이어 재생성 없음)
   useEffect(() => {
     startRef.current = start;
     endRef.current = end;
 
+    if (!isLooping) return; // 루프 모드가 아니면 seekTo 자동 실행 방지
+
     // 현재 재생 위치가 새 구간 밖으로 벗어났으면 start로 즉시 점프
-    // (구간을 줄여서 현재 위치가 새 end를 넘었거나, start보다 앞인 경우)
     const player = playerRef.current;
     if (player?.getCurrentTime) {
       const t = player.getCurrentTime();
@@ -85,9 +88,8 @@ function LoopPlayer({
         player.seekTo(start, true);
         player.playVideo();
       }
-      // 현재 위치가 새 구간 안에 있으면 그대로 재생 유지 (끊기지 않음)
     }
-  }, [start, end]);
+  }, [start, end, isLooping]);
 
   // 플레이어 생성은 videoId가 처음 마운트될 때 한 번만 (start/end 변경 시에는 재생성 안 함)
   useEffect(() => {
@@ -97,6 +99,8 @@ function LoopPlayer({
     // ref를 통해 항상 최신 start/end를 읽으므로 실시간 구간 조정이 즉시 반영됨
     const startInterval = () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
+      if (!isLooping) return; // 루프 중이 아니면 인터벌 시작 안 함
+
       intervalRef.current = setInterval(() => {
         const player = playerRef.current;
         if (!player?.getCurrentTime) return;
@@ -180,14 +184,16 @@ function LoopPlayer({
   // ── LoopPlayer 렌더링 ──────────────────────────────────────────
   return (
     <div className="loop-player-wrap">
-      {/* 상단 상태 표시줄: 현재 반복 구간과 닫기 버튼 */}
-      <div className="loop-player-bar">
-        <span className="loop-player-label">
-          <RotateCcw style={{ width: 13, height: 13, animation: 'spin 2s linear infinite', flexShrink: 0 }} />
-          구간 반복 중: {formatTimestamp(start)} ~ {formatTimestamp(end)}
-        </span>
-        <button className="loop-player-close" onClick={onClose}>✕ 닫기</button>
-      </div>
+      {/* 상단 상태 표시줄: 현재 반복 구간과 닫기 버튼 (루프 인 경우에만 표시) */}
+      {isLooping && (
+        <div className="loop-player-bar">
+          <span className="loop-player-label">
+            <RotateCcw style={{ width: 13, height: 13, animation: 'spin 2s linear infinite', flexShrink: 0 }} />
+            구간 반복 중: {formatTimestamp(start)} ~ {formatTimestamp(end)}
+          </span>
+          <button className="loop-player-close" onClick={onClose}>✕ 닫기</button>
+        </div>
+      )}
       {/* YouTube IFrame API가 이 div 요소를 실제 <iframe>으로 교체 */}
       <div ref={containerRef} className="loop-player-frame" />
     </div>
@@ -1334,58 +1340,61 @@ function App() {
               animate={{ opacity: 1 }}
               style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
             >
-              {/* 구간반복 플레이어 */}
-              {loopMode && loopConfig && loopSegment && (
-                <div>
+              {/* 비디오 플레이어 영역 (검색모드에서도 상시 노출) */}
+              {videoId && (
+                <div className="video-section">
                   <LoopPlayer
                     videoId={videoId}
-                    start={loopSegment.start}
-                    end={loopSegment.end}
+                    start={loopSegment?.start ?? 0}
+                    end={loopSegment?.end ?? 0}
+                    isLooping={loopMode && !!loopConfig}
                     onClose={() => setLoopConfig(null)}
                     formatTimestamp={formatTimestamp}
                     onPlayerReady={(player) => { loopPlayerRef.current = player; }}
                   />
-                  <div className="loop-controls">
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                      <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--brand-light)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                        구간 실시간 조정
-                      </span>
-                      <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                        {formatTimestamp(loopSegment.start)} ~ {formatTimestamp(loopSegment.end)}
-                        &nbsp;({Math.floor(loopSegment.end - loopSegment.start)}s)
-                      </span>
-                    </div>
-                    <div className="loop-ctrl-row" style={{ marginBottom: '0.375rem' }}>
-                      <span className="loop-ctrl-label">시작</span>
-                      <button className="btn-loop-step"
-                        onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.min(c.startOffset + 1, c.matchIndex) } : null)}
-                        disabled={loopSegment.startSegIdx === 0}
-                      >◀</button>
-                      <div className="loop-ctrl-preview">
-                        <span className="loop-ctrl-time">{formatTimestamp(loopSegment.startSeg.start)}</span>
-                        <span className="loop-ctrl-text">{loopSegment.startSeg.text.trim()}</span>
+                  {loopMode && loopConfig && loopSegment && (
+                    <div className="loop-controls">
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                        <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--brand-light)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+                          구간 실시간 조정
+                        </span>
+                        <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                          {formatTimestamp(loopSegment.start)} ~ {formatTimestamp(loopSegment.end)}
+                          &nbsp;({Math.floor(loopSegment.end - loopSegment.start)}s)
+                        </span>
                       </div>
-                      <button className="btn-loop-step"
-                        onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.max(0, c.startOffset - 1) } : null)}
-                        disabled={loopConfig.startOffset === 0}
-                      >▶</button>
-                    </div>
-                    <div className="loop-ctrl-row">
-                      <span className="loop-ctrl-label">종료</span>
-                      <button className="btn-loop-step"
-                        onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.max(0, c.endOffset - 1) } : null)}
-                        disabled={loopConfig.endOffset === 0}
-                      >◀</button>
-                      <div className="loop-ctrl-preview">
-                        <span className="loop-ctrl-time">{formatTimestamp(loopSegment.endSeg.start + loopSegment.endSeg.duration)}</span>
-                        <span className="loop-ctrl-text">{loopSegment.endSeg.text.trim()}</span>
+                      <div className="loop-ctrl-row" style={{ marginBottom: '0.375rem' }}>
+                        <span className="loop-ctrl-label">시작</span>
+                        <button className="btn-loop-step"
+                          onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.min(c.startOffset + 1, c.matchIndex) } : null)}
+                          disabled={loopSegment.startSegIdx === 0}
+                        >◀</button>
+                        <div className="loop-ctrl-preview">
+                          <span className="loop-ctrl-time">{formatTimestamp(loopSegment.startSeg.start)}</span>
+                          <span className="loop-ctrl-text">{loopSegment.startSeg.text.trim()}</span>
+                        </div>
+                        <button className="btn-loop-step"
+                          onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.max(0, c.startOffset - 1) } : null)}
+                          disabled={loopConfig.startOffset === 0}
+                        >▶</button>
                       </div>
-                      <button className="btn-loop-step"
-                        onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.min(c.endOffset + 1, segments.length - 1 - c.matchIndex) } : null)}
-                        disabled={loopSegment.endSegIdx >= segments.length - 1}
-                      >▶</button>
+                      <div className="loop-ctrl-row">
+                        <span className="loop-ctrl-label">종료</span>
+                        <button className="btn-loop-step"
+                          onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.max(0, c.endOffset - 1) } : null)}
+                          disabled={loopConfig.endOffset === 0}
+                        >◀</button>
+                        <div className="loop-ctrl-preview">
+                          <span className="loop-ctrl-time">{formatTimestamp(loopSegment.endSeg.start + loopSegment.endSeg.duration)}</span>
+                          <span className="loop-ctrl-text">{loopSegment.endSeg.text.trim()}</span>
+                        </div>
+                        <button className="btn-loop-step"
+                          onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.min(c.endOffset + 1, segments.length - 1 - c.matchIndex) } : null)}
+                          disabled={loopSegment.endSegIdx >= segments.length - 1}
+                        >▶</button>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
 

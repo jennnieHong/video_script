@@ -1304,9 +1304,36 @@ h1, h2, h3, h4 {
   gap: 0;
 }
 
+.select-all-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 1.25rem;
+  background: var(--surface-1);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.select-all-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.select-count {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
 .transcript-seg {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.5rem;
   padding: 0.45rem 0.5rem;
   border-radius: var(--radius-sm);
@@ -1347,7 +1374,7 @@ h1, h2, h3, h4 {
   background: transparent;
   cursor: pointer;
   padding: 0;
-  margin-top: 3px;  /* align to text baseline */
+  margin-top: 0;
   transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
   position: relative;
 }
@@ -1414,7 +1441,37 @@ mark.search-highlight {
   font-weight: 600;
 }
 
-/* search-field inside left panel controls-block */
-.controls-block .search-field {
+/* ─── Precision Selector ────────────────────────────────── */
+.precision-chips {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.precision-btn {
+  height: 26px;
+  padding: 0 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
   background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 0.725rem;
+  font-weight: 400;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 38px;
+}
+
+.precision-btn:hover {
+  border-color: var(--brand-light);
+  color: var(--text-secondary);
+}
+
+.precision-btn.active {
+  background: var(--brand-glow);
+  border-color: var(--brand);
+  color: var(--brand-light);
+  font-weight: 700;
 }

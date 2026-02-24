@@ -305,9 +305,8 @@ function App() {
   const [dragStartIdx, setDragStartIdx] = useState<number | null>(null); // 드래그 시작 세그먼트 인덱스
   const [isTrackingMode, setIsTrackingMode] = useState(true);           // 재생 위치 트래킹 모드 (기본값 ON)
   const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
-
-
-  // ─── 언어 목록 조회 ────────────────────────────────────────────
+  const [timestampPrecision, setTimestampPrecision] = useState(0);       // 타임스탬프 정밀도 (0:초, 1:0.1s, 2:0.01s, 3:ms)
+// ─── 언어 목록 조회 ────────────────────────────────────────────
   // URL이 YouTube 영상 링크처럼 보이는지 간단히 확인하는 정규식
   const YT_URL_RE = /(?:youtube\.com\/watch\?v=|youtu\.be\/)([0-9A-Za-z_-]{11})/;
 
@@ -468,13 +467,22 @@ function App() {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const secs = Math.floor(seconds % 60);
+    const ms = seconds % 1; // 소수점 이하 (밀리초 부근)
 
+    let timeStr = "";
     if (hours > 0) {
-      // 1시간 이상: "H:MM:SS" 형식
-      return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+      timeStr = `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    } else {
+      timeStr = `${minutes}:${secs.toString().padStart(2, '0')}`;
     }
-    // 1시간 미만: "M:SS" 형식
-    return `${minutes}:${secs.toString().padStart(2, '0')}`;
+
+    // 사용자가 설정한 정밀도에 따라 소수점 추가
+    if (timestampPrecision > 0) {
+      const precisionPart = ms.toFixed(timestampPrecision).substring(1); // ".000" 등
+      timeStr += precisionPart;
+    }
+
+    return timeStr;
   };
 
   // ─── 자막 내 키워드 검색 ──────────────────────────────────────
@@ -614,6 +622,22 @@ function App() {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  /** 전체 선택/해제 */
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      const all = new Set<number>();
+      for (let i = 0; i < segments.length; i++) all.add(i);
+      setCheckedSegs(all);
+      // 전체 선택 시 첫 번째 세그먼트부터 마지막까지 loopConfig 설정
+      if (segments.length > 0) {
+        setLoopConfig({ matchIndex: 0, startOffset: 0, endOffset: segments.length - 1 });
+      }
+    } else {
+      setCheckedSegs(new Set());
+      setLoopConfig(null);
+    }
+  };
+
   /** 드래그 선택 이벤트 핸들러 */
   const handleDragStart = (idx: number) => {
     if (!isDragMode) return;
@@ -642,8 +666,6 @@ function App() {
 
   const handleDragEnd = () => {
     if (!isDragMode || dragStartIdx === null) return;
-    const start = Math.min(dragStartIdx, Array.from(checkedSegs).sort((a,b)=>a-b)[0] ?? dragStartIdx);
-    const end = Math.max(dragStartIdx, Array.from(checkedSegs).sort((a,b)=>b-a)[0] ?? dragStartIdx);
     
     setDragStartIdx(null);
     
@@ -989,6 +1011,39 @@ function App() {
                   <div className="toggle-thumb" />
                 </div>
               </label>
+
+              {/* 타임스탬프 정밀도 선택 */}
+              <AnimatePresence>
+                {includeTimestamps && (
+                  <motion.div
+                    key="timestamp-precision"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    style={{ overflow: 'hidden' }}
+                  >
+                    <div className="control-row" style={{ alignItems: 'center', paddingTop: 0 }}>
+                      <span className="control-row-label" style={{ fontSize: '0.775rem' }}>
+                        타임스탬프 정밀도
+                      </span>
+                      <div className="precision-chips">
+                        {[0, 1, 2, 3].map((p) => (
+                          <button
+                            key={p}
+                            className={`precision-btn ${timestampPrecision === p ? 'active' : ''}`}
+                            onClick={() => setTimestampPrecision(p)}
+                          >
+                            {p === 0 ? '초' : `.${'0'.repeat(p)}s`}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div style={{ padding: '0 0.5rem 0.75rem', fontSize: '0.675rem', color: 'var(--text-muted)', fontStyle: 'italic', textAlign: 'right' }}>
+                      미리보기: [{formatTimestamp(125.456)}]
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {/* 줄바꿈 토글 */}
               <label className="control-row" style={{ cursor: 'pointer' }}>
@@ -1363,6 +1418,21 @@ function App() {
                   {includeTimestamps ? '저장 (타임스탬프)' : '저장'}
                 </button>
               </div>
+
+              {/* 전체 선택 바 (상단 고정) */}
+              {loopMode && segments.length > 0 && (
+                <div className="select-all-bar">
+                  <button
+                    className={`seg-check${checkedSegs.size === segments.length ? ' seg-check--on' : ''}`}
+                    onClick={() => handleSelectAll(checkedSegs.size !== segments.length)}
+                    title={checkedSegs.size === segments.length ? '전체 해제' : '전체 선택'}
+                  />
+                  <span className="select-all-label" onClick={() => handleSelectAll(checkedSegs.size !== segments.length)}>
+                    전체 {checkedSegs.size === segments.length ? '해제' : '선택'} 
+                    <span className="select-count">({checkedSegs.size}/{segments.length})</span>
+                  </span>
+                </div>
+              )}
 
               {/* 자막 — 세그먼트별 렌더링 (하이라이트 + 재생 위치 추적) */}
               <div 

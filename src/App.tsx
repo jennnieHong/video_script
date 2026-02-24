@@ -348,6 +348,9 @@ function App() {
   const [langError, setLangError] = useState('');                         // 언어 조회 실패 메시지
   const [isDragMode, setIsDragMode] = useState(false);                 // 드래그 선택 모드 활성화 여부
   const [dragStartIdx, setDragStartIdx] = useState<number | null>(null); // 드래그 시작 세그먼트 인덱스
+  // ref: state 업데이트 비동기 지연 없이 드래그 핸들러에서 즉시 읽기 위한 동기 참조
+  const dragStartIdxRef   = useRef<number | null>(null); // 드래그 시작 위치
+  const dragCurrentIdxRef = useRef<number | null>(null); // 드래그 현재(마지막) 위치
   const [isTrackingMode, setIsTrackingMode] = useState(true);           // 재생 위치 트래킹 모드 (기본값 ON)
   const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
   const [timestampPrecision, setTimestampPrecision] = useState(0);       // 타임스탬프 정밀도 (0:초, 1:0.1s, 2:0.01s, 3:ms)
@@ -690,51 +693,61 @@ function App() {
     }
   };
 
+  /**
+   * 드래그 중 DOM 직접 조작으로 'checked' 클래스 즉시 반영
+   * → setCheckedSegs를 호출하지 않으므로 React 리렌더 0회
+   */
+  const applyDragHighlight = useCallback((start: number, end: number) => {
+    const s = Math.min(start, end);
+    const e = Math.max(start, end);
+    segmentRefs.current.forEach((el, i) => {
+      el?.classList.toggle('checked', i >= s && i <= e);
+    });
+  }, []);
+
   /** 드래그 선택 이벤트 핸들러 */
   const handleDragStart = useCallback((idx: number) => {
     if (!isDragMode) return;
+    dragStartIdxRef.current   = idx;
+    dragCurrentIdxRef.current = idx;
+    // state 갱신: 트래킹 인터벌 일시 정지 목적만
     setDragStartIdx(idx);
-    // 드래그 시작 시 새로운 범위를 위해 기존 선택 초기화
-    const next = new Set<number>();
-    next.add(idx);
-    setCheckedSegs(next);
-  }, [isDragMode]);
+    // React state 변경 없이 DOM 직접 조작 → 이 리렌더로 renderedSegments 재계산 없음
+    applyDragHighlight(idx, idx);
+  }, [isDragMode, applyDragHighlight]);
 
   const handleDragEnter = useCallback((idx: number) => {
-    if (!isDragMode || dragStartIdx === null) return;
-    
-    // 시작점부터 현재점까지의 범위를 계산하여 체크 상태 업데이트
-    const next = new Set(checkedSegs);
-    const start = Math.min(dragStartIdx, idx);
-    const end = Math.max(dragStartIdx, idx);
-    
-    for (let i = start; i <= end; i++) {
-      next.add(i);
-    }
-    setCheckedSegs(next);
-  }, [isDragMode, dragStartIdx, checkedSegs]);
+    const startIdx = dragStartIdxRef.current;
+    if (!isDragMode || startIdx === null) return;
+    // 현재 위치 ref 갱신 → handleDragEnd가 stale closure 없이 마지막 위치를 읽음
+    dragCurrentIdxRef.current = idx;
+    // setCheckedSegs 대신 DOM 직접 조작 → 드래그 중 리렌더 완전 0회
+    applyDragHighlight(startIdx, idx);
+  }, [isDragMode, applyDragHighlight]);
 
   const handleDragEnd = () => {
-    if (!isDragMode || dragStartIdx === null) return;
-    
+    const startIdx   = dragStartIdxRef.current;
+    const currentIdx = dragCurrentIdxRef.current;
+    if (!isDragMode || startIdx === null) return;
+
+    dragStartIdxRef.current   = null;
+    dragCurrentIdxRef.current = null;
     setDragStartIdx(null);
-    
-    // 드래그 종료 후 즉시 재생 모드로 전환하고 구간 설정
-    if (checkedSegs.size > 0) {
-      const sorted = Array.from(checkedSegs).sort((a, b) => a - b);
-      setLoopConfig({
-        matchIndex: sorted[0],
-        startOffset: 0,
-        endOffset: sorted[sorted.length - 1] - sorted[0],
-      });
-      // 사용자 편의를 위해 자동으로 재생 모드 전환
-      setInteractionMode('play');
-      
-      // 이미 'once'나 'loop' 모드인 경우(동영상을 보는 모드)는 그대로 유지
-      // 새 창 팝업 모드이거나 초기화 상태인 경우에만 기본 장치인 'loop'로 전환
-      if (playbackOption === 'popup') {
-        setPlaybackOption('loop');
-      }
+
+    const endIdx     = currentIdx ?? startIdx;
+    const rangeStart = Math.min(startIdx, endIdx);
+    const rangeEnd   = Math.max(startIdx, endIdx);
+
+    // setLoopConfig → useEffect가 setCheckedSegs를 1회 호출 → 드래그 후 단 1회 리렌더
+    // (드래그 중에는 DOM 직접 조작만 했으므로 checkedSegs가 최신 범위와 다를 수 있음)
+    setLoopConfig({
+      matchIndex:  rangeStart,
+      startOffset: 0,
+      endOffset:   rangeEnd - rangeStart,
+    });
+    setInteractionMode('play');
+    if (playbackOption === 'popup') {
+      setPlaybackOption('loop');
     }
   };
 
@@ -760,6 +773,10 @@ function App() {
       setActiveSegIdx(-1);
       return;
     }
+    // 드래그 중에는 폴링 인터벌 자체를 생성하지 않음
+    // → setInterval이 없으면 불필요한 getCurrentTime 호출 및 렌더 방해 없음
+    if (dragStartIdx !== null) return;
+
     const timer = setInterval(() => {
       const player = loopPlayerRef.current;
       if (!player?.getCurrentTime) return;
@@ -775,12 +792,8 @@ function App() {
         if (segments[i].start <= t) { found = i; break; }
       }
       if (found !== -1) {
-        setActiveSegIdx(prev => {
-          if (prev !== found && dragStartIdx === null) {
-            segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-          }
-          return found;
-        });
+        setActiveSegIdx(found);
+        segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }
     }, 50);
     return () => clearInterval(timer);

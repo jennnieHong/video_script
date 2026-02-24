@@ -348,6 +348,8 @@ function App() {
   const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
   const [timestampPrecision, setTimestampPrecision] = useState(0);       // 타임스탬프 정밀도 (0:초, 1:0.1s, 2:0.01s, 3:ms)
   const [isSeekMode, setIsSeekMode] = useState(false);                  // 선택지점부터 재생 모드 (각 세그먼트에 ▶ 버튼 표시)
+  const [showSaveOptions, setShowSaveOptions] = useState(false);         // 저장 옵션 드롭다운 표시 여부
+  const saveOptionsRef = useRef<HTMLDivElement>(null);                   // 저장 옵션 드롭다운 DOM ref (외부 클릭 감지)
 // ─── 언어 목록 조회 ────────────────────────────────────────────
   // URL이 YouTube 영상 링크처럼 보이는지 간단히 확인하는 정규식
   const YT_URL_RE = /(?:youtube\.com\/watch\?v=|youtu\.be\/)([0-9A-Za-z_-]{11})/;
@@ -779,6 +781,18 @@ function App() {
     return () => clearInterval(timer);
   }, [segments, isTrackingMode, dragStartIdx, trackingOffset]);
 
+  // ─── 저장 옵션 드롭다운 외부 클릭 시 닫기 ────────────────────
+  useEffect(() => {
+    if (!showSaveOptions) return;
+    const handler = (e: MouseEvent) => {
+      if (saveOptionsRef.current && !saveOptionsRef.current.contains(e.target as Node)) {
+        setShowSaveOptions(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showSaveOptions]);
+
   // ─── 검색어 키워드 하이라이트 헬퍼 ───────────────────────────
   // text를 query 기준으로 분리하여 <mark>로 감싼 React 노드 배열로 반환
   const highlightText = (text: string, query: string): React.ReactNode => {
@@ -1036,145 +1050,6 @@ function App() {
             )}
           </AnimatePresence>
 
-          {/* 결과 있을 때 — 설정 컨트롤 */}
-          {hasResult && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="controls-block"
-            >
-              <p className="section-label">저장 옵션</p>
-
-              {/* 타임스탬프 토글 */}
-              <label className="control-row" style={{ cursor: 'pointer' }}>
-                <span className="control-row-label">
-                  <Clock style={{ width: 14, height: 14, color: 'var(--brand-light)' }} />
-                  타임스탬프 포함 저장
-                </span>
-                <div className="toggle">
-                  <input
-                    type="checkbox"
-                    checked={includeTimestamps}
-                    onChange={() => setIncludeTimestamps(v => !v)}
-                  />
-                  <div className="toggle-track" />
-                  <div className="toggle-thumb" />
-                </div>
-              </label>
-
-              {/* 타임스탬프 정밀도 선택 */}
-              <AnimatePresence>
-                {includeTimestamps && (
-                  <motion.div
-                    key="timestamp-precision"
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    style={{ overflow: 'hidden' }}
-                  >
-                    <div className="control-row" style={{ alignItems: 'center', paddingTop: 0 }}>
-                      <span className="control-row-label" style={{ fontSize: '0.775rem' }}>
-                        타임스탬프 정밀도
-                      </span>
-                      <div className="precision-chips">
-                        {[0, 1, 2, 3].map((p) => (
-                          <button
-                            key={p}
-                            className={`precision-btn ${timestampPrecision === p ? 'active' : ''}`}
-                            onClick={() => setTimestampPrecision(p)}
-                          >
-                            {p === 0 ? '초' : `.${'0'.repeat(p)}s`}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    <div style={{ padding: '0 0.5rem 0.75rem', fontSize: '0.675rem', color: 'var(--text-muted)', fontStyle: 'italic', textAlign: 'right' }}>
-                      미리보기: [{formatTimestamp(125.456)}]
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-              {/* 줄바꿈 토글 */}
-              <label className="control-row" style={{ cursor: 'pointer' }}>
-                <span className="control-row-label">
-                  <svg style={{ width: 14, height: 14, color: lineBreak ? 'var(--brand-light)' : 'var(--text-muted)', flexShrink: 0 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
-                  </svg>
-                  줄바꿈
-                </span>
-                <div className="toggle">
-                  <input
-                    type="checkbox"
-                    checked={lineBreak}
-                    onChange={() => setLineBreak(v => !v)}
-                  />
-                  <div className="toggle-track" />
-                  <div className="toggle-thumb" />
-                </div>
-              </label>
-
-              {/* 빈 줄 수 선택 (줄바꿈 ON 또는 타임스탬프 ON일 때 표시) */}
-              <AnimatePresence>
-                {(lineBreak || includeTimestamps) && (
-                  <motion.div
-                    key="line-break-count"
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    style={{ overflow: 'hidden' }}
-                  >
-                    <div className="control-row" style={{ alignItems: 'center' }}>
-                      <span className="control-row-label" style={{ fontSize: '0.775rem' }}>
-                        세그먼트 사이 빈 줄
-                      </span>
-                      {/* 빈 줄 수 버튼 그룹: 0 / 1 / 2 / 3줄 */}
-                      <div style={{ display: 'flex', gap: '0.25rem' }}>
-                        {[0, 1, 2, 3].map(n => (
-                          <button
-                            key={n}
-                            onClick={() => setLineBreakCount(n)}
-                            style={{
-                              width: 28, height: 26,
-                              borderRadius: 6,
-                              border: lineBreakCount === n
-                                ? '1px solid var(--brand)'
-                                : '1px solid var(--border-strong)',
-                              background: lineBreakCount === n
-                                ? 'rgba(99,102,241,0.2)'
-                                : 'var(--surface-2)',
-                              color: lineBreakCount === n
-                                ? 'var(--brand-light)'
-                                : 'var(--text-muted)',
-                              fontSize: '0.725rem',
-                              fontWeight: lineBreakCount === n ? 700 : 400,
-                              cursor: 'pointer',
-                              transition: 'all 0.15s',
-                              display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            }}
-                          >
-                            {n === 0 ? '없음' : `${n}줄`}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-
-              {segments.length > 0 && (
-                <div style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  padding: '0.5rem 0.875rem',
-                  fontSize: '0.75rem', color: 'var(--text-muted)'
-                }}>
-                  <span>추출된 세그먼트</span>
-                  <span style={{ color: 'var(--text-secondary)', fontWeight: 600 }}>{segments.length}개</span>
-                </div>
-              )}
-            </motion.div>
-          )}
 
           {/* ── 검색 패널 (결과 있을 때만) ── */}
           {hasResult && (
@@ -1512,10 +1387,134 @@ function App() {
                   }
                 </button>
                 <div className="divider-v" />
-                <button className="btn-icon" onClick={downloadTxt} title="TXT 파일로 저장">
-                  <Download style={{ width: 13, height: 13 }} />
-                  {includeTimestamps ? '저장 (타임스탬프)' : '저장'}
-                </button>
+                {/* 저장 옵션 드롭다운 */}
+                <div ref={saveOptionsRef} style={{ position: 'relative', display: 'flex', alignItems: 'stretch', gap: '0.375rem' }}>
+                  <button className="btn-icon" onClick={downloadTxt} title="TXT 파일로 저장">
+                    <Download style={{ width: 13, height: 13 }} />
+                    {includeTimestamps ? '저장 (타임스탬프)' : '저장'}
+                  </button>
+                  <button
+                    className={`btn-icon save-opts-trigger${showSaveOptions ? ' active' : ''}`}
+                    onClick={() => setShowSaveOptions(v => !v)}
+                    title="저장 옵션"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 13, height: 13 }}>
+                      <circle cx="12" cy="12" r="3"/>
+                      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                  </button>
+
+                  {/* Floating 드롭다운 패널 */}
+                  <AnimatePresence>
+                    {showSaveOptions && (
+                      <motion.div
+                        key="save-options-popup"
+                        initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                        transition={{ duration: 0.15 }}
+                        className="save-options-popup"
+                      >
+                        <p className="save-opts-title">저장 옵션</p>
+
+                        {/* 타임스탬프 토글 */}
+                        <label className="control-row" style={{ cursor: 'pointer' }}>
+                          <span className="control-row-label">
+                            <Clock style={{ width: 13, height: 13, color: 'var(--brand-light)' }} />
+                            타임스탬프 포함
+                          </span>
+                          <div className="toggle">
+                            <input type="checkbox" checked={includeTimestamps} onChange={() => setIncludeTimestamps(v => !v)} />
+                            <div className="toggle-track" />
+                            <div className="toggle-thumb" />
+                          </div>
+                        </label>
+
+                        {/* 타임스탬프 정밀도 */}
+                        <AnimatePresence>
+                          {includeTimestamps && (
+                            <motion.div
+                              key="ts-prec"
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              exit={{ opacity: 0, height: 0 }}
+                              style={{ overflow: 'hidden' }}
+                            >
+                              <div className="control-row" style={{ alignItems: 'center', paddingTop: 0 }}>
+                                <span className="control-row-label" style={{ fontSize: '0.75rem' }}>정밀도</span>
+                                <div className="precision-chips">
+                                  {[0,1,2,3].map(p => (
+                                    <button
+                                      key={p}
+                                      className={`precision-btn ${timestampPrecision === p ? 'active' : ''}`}
+                                      onClick={() => setTimestampPrecision(p)}
+                                    >
+                                      {p === 0 ? '초' : `.${'0'.repeat(p)}s`}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                              <div style={{ padding: '0 0.5rem 0.5rem', fontSize: '0.65rem', color: 'var(--text-muted)', fontStyle: 'italic', textAlign: 'right' }}>
+                                미리보기: [{formatTimestamp(125.456)}]
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+
+                        {/* 줄바꿈 토글 */}
+                        <label className="control-row" style={{ cursor: 'pointer' }}>
+                          <span className="control-row-label">
+                            <svg style={{ width: 13, height: 13, color: lineBreak ? 'var(--brand-light)' : 'var(--text-muted)', flexShrink: 0 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/>
+                            </svg>
+                            줄바꿈
+                          </span>
+                          <div className="toggle">
+                            <input type="checkbox" checked={lineBreak} onChange={() => setLineBreak(v => !v)} />
+                            <div className="toggle-track" />
+                            <div className="toggle-thumb" />
+                          </div>
+                        </label>
+
+                        {/* 빈 줄 수 */}
+                        <AnimatePresence>
+                          {(lineBreak || includeTimestamps) && (
+                            <motion.div
+                              key="lbc"
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              exit={{ opacity: 0, height: 0 }}
+                              style={{ overflow: 'hidden' }}
+                            >
+                              <div className="control-row" style={{ alignItems: 'center' }}>
+                                <span className="control-row-label" style={{ fontSize: '0.75rem' }}>세그먼트 사이 빈 줄</span>
+                                <div style={{ display: 'flex', gap: '0.2rem' }}>
+                                  {[0,1,2,3].map(n => (
+                                    <button
+                                      key={n}
+                                      onClick={() => setLineBreakCount(n)}
+                                      style={{
+                                        width: 26, height: 24, borderRadius: 5,
+                                        border: lineBreakCount === n ? '1px solid var(--brand)' : '1px solid var(--border-strong)',
+                                        background: lineBreakCount === n ? 'rgba(99,102,241,0.2)' : 'var(--surface-2)',
+                                        color: lineBreakCount === n ? 'var(--brand-light)' : 'var(--text-muted)',
+                                        fontSize: '0.7rem', fontWeight: lineBreakCount === n ? 700 : 400,
+                                        cursor: 'pointer', transition: 'all 0.15s',
+                                        display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                      }}
+                                    >
+                                      {n === 0 ? '없음' : `${n}줄`}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
               </div>
 
               {/* 전체 선택 바 (상단 고정) */}

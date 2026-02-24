@@ -990,6 +990,7 @@ h1, h2, h3, h4 {
   display: flex;
   gap: 0.5rem;
   width: 100%;
+  flex-wrap: wrap;
 }
 
 .mode-toggle-bar {
@@ -1577,4 +1578,90 @@ h1, h2, h3, h4 {
   border-color: var(--brand);
   color: var(--brand-light);
   font-weight: 700;
+}
+
+/* ─── Multi Range Panel ──────────────────────────────────── */
+.multi-range-panel {
+  margin-top: 0.4rem;
+  margin-left: 0.75rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-left: 2px solid var(--brand-light);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.multi-range-hint {
+  margin: 0;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.multi-range-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.multi-range-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.3rem 0.5rem;
+  background: var(--surface-0);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.multi-range-item.playing {
+  border-color: var(--brand);
+  background: var(--brand-glow);
+}
+
+.multi-range-num {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--brand-light);
+  min-width: 1rem;
+  text-align: center;
+}
+
+.multi-range-time {
+  flex: 1;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+}
+
+.multi-range-del {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  cursor: pointer;
+  padding: 0.1rem 0.25rem;
+  border-radius: 3px;
+  line-height: 1;
+  transition: color 0.15s, background 0.15s;
+}
+
+.multi-range-del:hover {
+  color: #f87171;
+  background: rgba(239,68,68,0.1);
+}
+
+.multi-range-gap-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding-top: 0.25rem;
+  border-top: 1px solid var(--border);
+  flex-wrap: nowrap;
 }

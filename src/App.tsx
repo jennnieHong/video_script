@@ -80,16 +80,17 @@ function LoopPlayer({
     endRef.current = end;
 
     const player = playerRef.current;
-    if (player?.getCurrentTime) {
-      const t = player.getCurrentTime();
-      // (1) 새로운 구간 클릭 시 점프 (2) 루프 모드인데 범위를 벗어났을 때 점프
-      const isNewClick = start !== prevStart;
-      const isOutOfBounds = playbackMode === 'loop' && (t < start || t >= end);
+    // playbackMode가 none이면 구간 제한 없음 → seekTo 하지 않음
+    // (지점 재생 등으로 loopConfig가 해제될 때 영상이 0초로 돌아가는 것 방지)
+    if (playbackMode === 'none' || !player?.getCurrentTime) return;
 
-      if (isNewClick || isOutOfBounds) {
-        player.seekTo(start, true);
-        player.playVideo();
-      }
+    const t = player.getCurrentTime();
+    const isNewClick = start !== prevStart;
+    const isOutOfBounds = playbackMode === 'loop' && (t < start || t >= end);
+
+    if (isNewClick || isOutOfBounds) {
+      player.seekTo(start, true);
+      player.playVideo();
     }
   }, [start, end, playbackMode]);
 
@@ -294,9 +295,6 @@ function App() {
   // - 'popup': 새 창에서 해당 시간대 열기
   const [playbackOption, setPlaybackOption] = useState<'loop' | 'once' | 'popup'>('loop');
 
-  // loopMode: 앱 내 플레이어를 표시해야 하는 상태인지 여부 (loop 또는 once)
-  const loopMode = interactionMode === 'play' && (playbackOption === 'loop' || playbackOption === 'once');
-
   // loopConfig: 구간반복 모드에서 현재 재생 중인 구간 설정
   //   - 클릭 즉시 설정되어 LoopPlayer가 바로 시작됨
   //   - 재생 중에 startOffset/endOffset을 조정하면 실시간으로 start/end가 갱신됨
@@ -306,6 +304,10 @@ function App() {
     startOffset: number; // 시작을 matchIndex 기준으로 몇 세그먼트 앞으로 당길지 (0 = 클릭한 세그먼트)
     endOffset: number;   // 종료를 matchIndex 기준으로 몇 세그먼트 뒤로 늘릴지 (0 = 클릭한 세그먼트)
   } | null>(null);
+
+  // loopMode: 앱 내 플레이어를 표시해야 하는 상태인지 여부 (loop 또는 once)
+  // loopConfig가 null이면 구간 설정이 없으므로 loopMode도 false
+  const loopMode = interactionMode === 'play' && (playbackOption === 'loop' || playbackOption === 'once') && loopConfig !== null;
 
   // loopConfig에서 파생되는 실제 start/end 시간 계산 (LoopPlayer에 전달)
   const loopSegment = loopConfig && segments.length > 0 ? (() => {
@@ -347,6 +349,10 @@ function App() {
   const [langLoading, setLangLoading] = useState(false);                  // 언어 목록 로딩 중 여부
   const [langError, setLangError] = useState('');                         // 언어 조회 실패 메시지
   const [isDragMode, setIsDragMode] = useState(false);                 // 드래그 선택 모드 활성화 여부
+  const [isMultiRangeMode, setIsMultiRangeMode] = useState(false);     // 다중 구간 모드 (드래그할 때마다 구간 추가)
+  const [multiRanges, setMultiRanges] = useState<{startIdx: number; endIdx: number}[]>([]); // 지정된 구간 목록
+  const [rangeGap, setRangeGap] = useState(1);                         // 구간 사이 간격 (초)
+  const [activeMultiRangeIdx, setActiveMultiRangeIdx] = useState(0);   // 현재 재생 중인 구간 번호
   const [dragStartIdx, setDragStartIdx] = useState<number | null>(null); // 드래그 시작 세그먼트 인덱스
   // ref: state 업데이트 비동기 지연 없이 드래그 핸들러에서 즉시 읽기 위한 동기 참조
   const dragStartIdxRef   = useRef<number | null>(null); // 드래그 시작 위치
@@ -707,14 +713,14 @@ function App() {
 
   /** 드래그 선택 이벤트 핸들러 */
   const handleDragStart = useCallback((idx: number) => {
-    if (!isDragMode) return;
+    if (!isDragMode || isSeekMode) return; // 지점 재생 모드일 때는 드래그 무시
     dragStartIdxRef.current   = idx;
     dragCurrentIdxRef.current = idx;
     // state 갱신: 트래킹 인터벌 일시 정지 목적만
     setDragStartIdx(idx);
     // React state 변경 없이 DOM 직접 조작 → 이 리렌더로 renderedSegments 재계산 없음
     applyDragHighlight(idx, idx);
-  }, [isDragMode, applyDragHighlight]);
+  }, [isDragMode, isSeekMode, applyDragHighlight]);
 
   const handleDragEnter = useCallback((idx: number) => {
     const startIdx = dragStartIdxRef.current;
@@ -738,28 +744,53 @@ function App() {
     const rangeStart = Math.min(startIdx, endIdx);
     const rangeEnd   = Math.max(startIdx, endIdx);
 
-    // setLoopConfig → useEffect가 setCheckedSegs를 1회 호출 → 드래그 후 단 1회 리렌더
-    // (드래그 중에는 DOM 직접 조작만 했으므로 checkedSegs가 최신 범위와 다를 수 있음)
-    setLoopConfig({
-      matchIndex:  rangeStart,
-      startOffset: 0,
-      endOffset:   rangeEnd - rangeStart,
-    });
-    setInteractionMode('play');
-    if (playbackOption === 'popup') {
-      setPlaybackOption('loop');
+    if (isMultiRangeMode) {
+      // 이미 동일 구간이 있으면 추가하지 않음
+      const isDup = multiRanges.some(r => r.startIdx === rangeStart && r.endIdx === rangeEnd);
+      if (!isDup) {
+        const isFirst = multiRanges.length === 0;
+        setMultiRanges(prev => [...prev, { startIdx: rangeStart, endIdx: rangeEnd }]);
+
+        if (isFirst) {
+          // 첫 번째 구간: 플레이어 시작
+          setLoopConfig({ matchIndex: rangeStart, startOffset: 0, endOffset: rangeEnd - rangeStart });
+          setInteractionMode('play');
+          if (playbackOption === 'popup') setPlaybackOption('loop');
+        }
+        // 이후 구간: setLoopConfig 호출 안 함 → 재생 중단 없음
+        // loopConfig는 좌화 사이클링 useEffect가 자동 관리
+      }
+    } else {
+      // 단일 구간 모드: 기존 동작
+      setLoopConfig({
+        matchIndex:  rangeStart,
+        startOffset: 0,
+        endOffset:   rangeEnd - rangeStart,
+      });
+      setInteractionMode('play');
+      if (playbackOption === 'popup') setPlaybackOption('loop');
     }
   };
 
-  // loopConfig 변경 시 checkedSegs 동기화 (수동 ±, 검색 클릭 등 외부 변경도 반영)
+  // loopConfig/multiRanges 변경 시 checkedSegs 동기화
   useEffect(() => {
+    // 다중 구간 모드: 모든 구간의 합집합을 체크로 표시
+    if (isMultiRangeMode && multiRanges.length > 0) {
+      const ns = new Set<number>();
+      multiRanges.forEach(r => {
+        for (let i = r.startIdx; i <= r.endIdx; i++) ns.add(i);
+      });
+      setCheckedSegs(ns);
+      return;
+    }
+    // 단일 구간 모드: loopConfig 기준
     if (!loopConfig || segments.length === 0) { setCheckedSegs(new Set()); return; }
     const s = Math.max(0, loopConfig.matchIndex - loopConfig.startOffset);
     const e = Math.min(segments.length - 1, loopConfig.matchIndex + loopConfig.endOffset);
     const ns = new Set<number>();
     for (let i = s; i <= e; i++) ns.add(i);
     setCheckedSegs(ns);
-  }, [loopConfig, segments]);
+  }, [loopConfig, segments, isMultiRangeMode, multiRanges]);
 
   // ─── 재생 중 활성 세그먼트 감지 → 자동 스크롤 ─────────────────
   // LoopPlayer의 YT.Player 인스턴스에 직접 접근하기 어려우므로,
@@ -798,6 +829,71 @@ function App() {
     }, 50);
     return () => clearInterval(timer);
   }, [segments, isTrackingMode, dragStartIdx, trackingOffset]);
+
+  // ─── 다중 구간 순차 재생 ──────────────────────────────────────
+  // gapTimerRef / isInGapRef: 구간 간격 대기 상태 관리
+  const isInGapRef  = useRef(false);
+  // activeMultiRangeIdxRef: interval 콜백이 항상 최신 인덱스를 즉시 읽도록
+  const activeMultiRangeIdxRef = useRef(0);
+  useEffect(() => { activeMultiRangeIdxRef.current = activeMultiRangeIdx; }, [activeMultiRangeIdx]);
+
+  useEffect(() => {
+    // 다중 구간 모드 + 구간 2개 이상 + loopMode만 처리
+    if (!isMultiRangeMode || multiRanges.length < 2 || !loopMode) return;
+    if (dragStartIdx !== null) return;
+
+    let cancelled = false; // 이 effect 인스턴스가 cleanup됐는지 여부
+
+    const timer = setInterval(() => {
+      if (isInGapRef.current) return;
+      const player = loopPlayerRef.current;
+      if (!player?.getCurrentTime) return;
+
+      const state     = player.getPlayerState?.();
+      const t         = player.getCurrentTime();
+      const curIdx    = activeMultiRangeIdxRef.current; // ref로 즉시 읽기
+      const cur       = multiRanges[curIdx];
+      if (!cur || !segments[cur.endIdx]) return;
+
+      const endTime    = segments[cur.endIdx].start + segments[cur.endIdx].duration;
+      // 재생이 구간 끝에 도달했거나 영상이 자연 종료된 경우
+      const rangeEnded = (state === 1 && t >= endTime - 0.15) || state === 0;
+      if (!rangeEnded) return;
+
+      isInGapRef.current = true;
+      if (state !== 0) player.pauseVideo(); // 아직 재생 중이면 정지
+
+      const nextIdx   = (curIdx + 1) % multiRanges.length;
+      const next      = multiRanges[nextIdx];
+      const nextStart = segments[next.startIdx]?.start ?? 0;
+
+      // 즉시 ref 업데이트 → 다음 tick에 중복 감지 방지
+      activeMultiRangeIdxRef.current = nextIdx;
+      setActiveMultiRangeIdx(nextIdx); // UI용 state (비동기, deps에서 제거)
+
+      setTimeout(() => {
+        if (cancelled) return; // 이 effect가 이미 cleanup됐으면 중단
+        setLoopConfig({
+          matchIndex:  next.startIdx,
+          startOffset: 0,
+          endOffset:   next.endIdx - next.startIdx,
+        });
+        player.seekTo(nextStart, true);
+        player.playVideo();
+        isInGapRef.current = false;
+      }, rangeGap * 1000);
+    }, 150);
+
+    return () => {
+      cancelled = true; // setTimeout 콜백에서 이 effect 인스턴스가 만료됐음을 인식
+      clearInterval(timer);
+      // gapTimerRef는 cancelled 플래그로 처리 → clearTimeout 불필요
+      isInGapRef.current = false;
+    };
+  // activeMultiRangeIdx를 deps에서 제거: ref로 접근하므로 재실행 불필요
+  // (포함 시 setActiveMultiRangeIdx 호출 → 재실행 → gap 타이머 클리어되는 버그)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isMultiRangeMode, multiRanges, loopMode, segments, rangeGap, dragStartIdx]);
 
   // ─── 저장 옵션 드롭다운 외부 클릭 시 닫기 ────────────────────
   useEffect(() => {
@@ -845,9 +941,11 @@ function App() {
                 isDragMode             ? 'drag-mode': '',
                 isSeekMode             ? 'seek-mode': '',
               ].join(' ').trim()}
-              onMouseDown={() => handleDragStart(i)}
-              onMouseEnter={() => handleDragEnter(i)}
+              onMouseDown={() => { if (!isSeekMode) handleDragStart(i); }}
+              onMouseEnter={() => { if (!isSeekMode) handleDragEnter(i); }}
               onClick={isSeekMode ? () => {
+                // 드래그 구간 해제 → 자유 재생
+                setLoopConfig(null);
                 const player = loopPlayerRef.current;
                 if (player?.seekTo) {
                   player.seekTo(seg.start, true);
@@ -1332,6 +1430,128 @@ function App() {
               </div>
             </motion.div>
           )}
+
+          {/* ── 다중 구간 패널 (드래그 모드 ON일 때 left panel에 표시) ── */}
+          {hasResult && isDragMode && (
+            <motion.div
+              key="multi-range-section"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              style={{ overflow: 'hidden' }}
+              className="controls-block"
+            >
+              <p className="section-label">
+                <svg style={{ width: 11, height: 11 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+                  <rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
+                </svg>
+                다중 구간 재생
+              </p>
+
+              {/* 다중 구간 모드 토글 */}
+              <div
+                className={`mode-toggle-bar ${isMultiRangeMode ? 'active' : ''}`}
+                onClick={() => {
+                  const next = !isMultiRangeMode;
+                  setIsMultiRangeMode(next);
+                  if (next && loopConfig) {
+                    // ON: 현재 재생 중인 구간을 첫 항목으로 자동 추가
+                    const s = Math.max(0, loopConfig.matchIndex - loopConfig.startOffset);
+                    const e = Math.min(segments.length - 1, loopConfig.matchIndex + loopConfig.endOffset);
+                    setMultiRanges([{ startIdx: s, endIdx: e }]);
+                  } else {
+                    // OFF: 초기화
+                    setMultiRanges([]);
+                  }
+                  setActiveMultiRangeIdx(0);
+                }}
+              >
+                <div className="mode-toggle-info">
+                  <span className="mode-toggle-icon">
+                    <svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/>
+                      <rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/>
+                    </svg>
+                  </span>
+                  <div className="mode-toggle-texts">
+                    <span className="mode-toggle-title">다중 구간 모드</span>
+                    <span className="mode-toggle-desc">{isMultiRangeMode ? '드래그로 구간 추가' : '여러 구간 순차 재생'}</span>
+                  </div>
+                </div>
+                <div className="toggle">
+                  <input type="checkbox" checked={isMultiRangeMode}
+                    onChange={(e) => {
+                      e.stopPropagation();
+                      const next = e.target.checked;
+                      setIsMultiRangeMode(next);
+                      if (next && loopConfig) {
+                        const s = Math.max(0, loopConfig.matchIndex - loopConfig.startOffset);
+                        const en = Math.min(segments.length - 1, loopConfig.matchIndex + loopConfig.endOffset);
+                        setMultiRanges([{ startIdx: s, endIdx: en }]);
+                      } else {
+                        setMultiRanges([]);
+                      }
+                      setActiveMultiRangeIdx(0);
+                    }} />
+                  <div className="toggle-track" />
+                  <div className="toggle-thumb" />
+                </div>
+              </div>
+
+              {/* 구간 목록 + 설정 (다중 구간 모드 ON일 때) */}
+              <AnimatePresence>
+                {isMultiRangeMode && (
+                  <motion.div
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    style={{ overflow: 'hidden' }}
+                  >
+                    <div className="multi-range-panel" style={{ marginLeft: 0, borderLeft: 'none', marginTop: '0.4rem' }}>
+                      {multiRanges.length === 0 ? (
+                        <p className="multi-range-hint">대본에서 드래그해서 구간을 추가하세요</p>
+                      ) : (
+                        <div className="multi-range-list">
+                          {multiRanges.map((r, ri) => {
+                            const sSeg = segments[r.startIdx];
+                            const eSeg = segments[r.endIdx];
+                            if (!sSeg) return null;
+                            const isPlaying = activeMultiRangeIdx === ri && loopMode;
+                            return (
+                              <div key={ri} className={`multi-range-item${isPlaying ? ' playing' : ''}`}>
+                                <span className="multi-range-num">{ri + 1}</span>
+                                <span className="multi-range-time">
+                                  {formatTimestamp(sSeg.start)} ~ {formatTimestamp(eSeg.start + eSeg.duration)}
+                                </span>
+                                <button className="multi-range-del" title="삭제"
+                                  onClick={() => { setMultiRanges(prev => prev.filter((_, i) => i !== ri)); setActiveMultiRangeIdx(0); }}>✕</button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <div className="multi-range-gap-row">
+                        <span className="sync-label">구간 간격</span>
+                        <button className="sync-btn" onClick={() => setRangeGap(v => Math.max(0, +(v - 0.5).toFixed(1)))}> - </button>
+                        <span style={{ fontFamily: 'monospace', fontSize: '0.8rem', minWidth: '2.5rem', textAlign: 'center' }}>{rangeGap.toFixed(1)}s</span>
+                        <button className="sync-btn" onClick={() => setRangeGap(v => Math.min(10, +(v + 0.5).toFixed(1)))}> + </button>
+                        <input type="range" min="0" max="10" step="0.5"
+                          value={rangeGap} onChange={e => setRangeGap(parseFloat(e.target.value))}
+                          className="sync-slider" style={{ flex: 1 }} />
+                      </div>
+                      {multiRanges.length > 0 && (
+                        <button
+                          style={{ fontSize: '0.7rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '0.1rem 0' }}
+                          onClick={() => { setMultiRanges([]); setActiveMultiRangeIdx(0); }}
+                        >구간 전체 삭제</button>
+                      )}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
+          )}
         </aside>
 
         {/* ══ 우측 패널: 결과 ════════════════════════════════════ */}
@@ -1382,7 +1602,11 @@ function App() {
                       start={loopSegment?.start ?? 0}
                       end={loopSegment?.end ?? 0}
                       playbackMode={
-                        !loopMode ? 'none' : 
+                        !loopMode ? 'none' :
+                        // 다중 구간 모드(2개 이상): LoopPlayer 자체 루프 비활성
+                        // → App의 사이클링 useEffect가 구간 전환을 전담
+                        // (LoopPlayer 루프가 살아있으면 seekTo 충돌로 A만 반복되는 버그)
+                        (isMultiRangeMode && multiRanges.length >= 2) ? 'none' :
                         (playbackOption === 'once' ? 'once' : 'loop')
                       }
                       onClose={() => setLoopConfig(null)}
@@ -1630,7 +1854,7 @@ function App() {
               <div className="transcript-footer">
                 <div className="footer-controls">
                   {/* 선택지점부터 재생 모드 */}
-                  <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => setIsSeekMode(v => !v)}>
+                  <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => { const next = !isSeekMode; setIsSeekMode(next); if (next) setLoopConfig(null); }}>
                     <div className="mode-toggle-info">
                       <span className="mode-toggle-icon">
                         <svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
@@ -1644,7 +1868,7 @@ function App() {
                       <input
                         type="checkbox"
                         checked={isSeekMode}
-                        onChange={(e) => { e.stopPropagation(); setIsSeekMode(e.target.checked); }}
+                        onChange={(e) => { e.stopPropagation(); const next = e.target.checked; setIsSeekMode(next); if (next) setLoopConfig(null); }}
                       />
                       <div className="toggle-track" />
                       <div className="toggle-thumb" />

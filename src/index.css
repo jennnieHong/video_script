@@ -1433,6 +1433,32 @@ h1, h2, h3, h4 {
   color: var(--text-primary);
 }
 
+/* 발음 자막 입력 */
+.seg-translation {
+  flex: 1;
+  min-width: 0;
+  padding: 0.2rem 0.5rem;
+  font-size: 0.8rem;
+  font-family: inherit;
+  background: rgba(99, 102, 241, 0.06);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.seg-translation::placeholder {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.75rem;
+}
+
+.seg-translation:focus {
+  border-color: var(--brand-light);
+  background: rgba(99, 102, 241, 0.1);
+}
+
 /* ─── Segment seek button (play-from-point mode) ─────────── */
 .seg-seek-btn {
   flex-shrink: 0;

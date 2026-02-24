@@ -361,6 +361,8 @@ function App() {
   const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
   const [timestampPrecision, setTimestampPrecision] = useState(0);       // 타임스탬프 정밀도 (0:초, 1:0.1s, 2:0.01s, 3:ms)
   const [isSeekMode, setIsSeekMode] = useState(false);                  // 선택지점부터 재생 모드 (각 세그먼트에 ▶ 버튼 표시)
+  const [showTranslation, setShowTranslation] = useState(false);         // 발음 자막 편집 패널 표시
+  const [translations, setTranslations] = useState<Record<number, string>>({}); // 세그먼트별 발음 텍스트
   const [showSaveOptions, setShowSaveOptions] = useState(false);         // 저장 옵션 드롭다운 표시 여부
   const saveOptionsRef = useRef<HTMLDivElement>(null);                   // 저장 옵션 드롭다운 DOM ref (외부 클릭 감지)
 // ─── 언어 목록 조회 ────────────────────────────────────────────
@@ -974,12 +976,27 @@ function App() {
               <span className="seg-text">
                 {highlightText(seg.text.trim(), searchQuery && searchResults.length > 0 ? searchQuery : '')}
               </span>
+              {/* 발음 자막 입력 */}
+              {showTranslation && (
+                <input
+                  className="seg-translation"
+                  type="text"
+                  placeholder="발음 입력..."
+                  value={translations[i] || ''}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setTranslations(prev => ({ ...prev, [i]: val }));
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseDown={(e) => e.stopPropagation()}
+                />
+              )}
             </div>
           );
         })}
       </div>
     );
-  }, [segments, activeSegIdx, searchResults, checkedSegs, isDragMode, isSeekMode, loopMode, searchQuery, transcript, handleDragStart, handleDragEnter, handleSegToggle, openYouTubeAtTime, formatTimestamp, highlightText]);
+  }, [segments, activeSegIdx, searchResults, checkedSegs, isDragMode, isSeekMode, loopMode, searchQuery, transcript, showTranslation, translations, handleDragStart, handleDragEnter, handleSegToggle, openYouTubeAtTime, formatTimestamp, highlightText]);
 
   // ─── TXT 파일 다운로드 ────────────────────────────────────────
   /**
@@ -1058,6 +1075,35 @@ function App() {
     }
   };
 
+
+  // ─── SRT 파일 내보내기 (발음 자막용) ────────────────────────────
+  const toSrtTime = (sec: number) => {
+    const h = Math.floor(sec / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const s = Math.floor(sec % 60);
+    const ms = Math.round((sec % 1) * 1000);
+    return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
+  };
+
+  const downloadSrt = () => {
+    if (segments.length === 0) return;
+    const lines = segments.map((seg, i) => {
+      const text = (translations[i] || '').trim() || decodeHtmlEntities(seg.text.trim());
+      const start = toSrtTime(seg.start);
+      const end = toSrtTime(seg.start + seg.duration);
+      return `${i + 1}\r\n${start} --> ${end}\r\n${text}`;
+    });
+    const content = '\uFEFF' + lines.join('\r\n\r\n') + '\r\n';
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `phonetic_${videoId || 'output'}.srt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 100);
+  };
 
   // ================================================================
   // JSX 렌더링
@@ -1695,6 +1741,29 @@ function App() {
                     : <><Copy style={{ width: 13, height: 13 }} /> 복사</>
                   }
                 </button>
+                <div className="divider-v" />
+                {/* 발음 자막 토글 */}
+                <button
+                  className={`btn-icon${showTranslation ? ' active' : ''}`}
+                  onClick={() => setShowTranslation(v => !v)}
+                  title="발음 자막 편집"
+                >
+                  <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M4 5h7"/><path d="M9 3v2"/><path d="M4 11l3-3 3 3"/>
+                    <path d="M12.5 7.5l4 8"/><path d="M14 14h5"/>
+                  </svg>
+                  발음
+                </button>
+                {showTranslation && (
+                  <button
+                    className="btn-icon"
+                    onClick={downloadSrt}
+                    title="SRT 발음 자막 내보내기"
+                  >
+                    <Download style={{ width: 13, height: 13 }} />
+                    SRT
+                  </button>
+                )}
                 <div className="divider-v" />
                 {/* 저장 옵션 드롭다운 */}
                 <div ref={saveOptionsRef} style={{ position: 'relative', display: 'flex', alignItems: 'stretch', gap: '0.375rem' }}>

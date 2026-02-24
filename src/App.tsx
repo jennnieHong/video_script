@@ -9,7 +9,7 @@
 //   5. 구간반복 모드: 검색 결과 클릭 시 해당 구간을 앱 내 플레이어로 반복 재생
 // ============================================================
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 // lucide-react: 아이콘 라이브러리
 import { Youtube, Send, Copy, Download, Loader2, FileText, CheckCircle2, Search, Clock, RotateCcw } from 'lucide-react';
 // framer-motion: 애니메이션(페이드인, 슬라이드 등)
@@ -141,10 +141,13 @@ function LoopPlayer({
 
       playerRef.current = new window.YT.Player(containerRef.current, {
         videoId,
+        host: 'https://www.youtube.com',
         playerVars: {
           start: startRef.current, // 초기 재생 시작 위치 (이후 변경은 ref+interval 처리)
           autoplay: 1,
           controls: 1,
+          enablejsapi: 1,
+          origin: window.location.origin,
           // end를 playerVars에 넣지 않음 → state=2(pause) 문제를 피하고 interval로만 제어
         },
         events: {
@@ -269,7 +272,8 @@ function App() {
   const [error, setError] = useState('');        // 사용자에게 표시할 에러 메시지
   const [copied, setCopied] = useState(false);   // "복사됨" 피드백 표시 여부 (2초 후 자동 리셋)
 
-  const [searchQuery, setSearchQuery] = useState('');           // 검색창 입력값
+  const [searchQuery, setSearchQuery] = useState('');    // 실제 검색 실행시 사용되는 쿼리 (만 루지 Enter/버튼시 업데이트)
+  const [searchInput, setSearchInput] = useState('');     // 검색 입력창 UI 값 (즉각 반영될 도 를지, 리렌더 범위 최소화)
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]); // 검색 결과 목록
 
   // activeSegIdx: LoopPlayer 재생 중 현재 재생 위치에 해당하는 세그먼트 인덱스
@@ -397,6 +401,7 @@ function App() {
     setTranscript('');
     setSegments([]);
     setSearchQuery('');
+    setSearchInput('');
     setSearchResults([]);
     setLoopConfig(null);  // 새 영상 검색 시 구간반복 플레이어도 닫음
 
@@ -507,7 +512,7 @@ function App() {
    *   - 초(float) → "M:SS" 또는 "H:MM:SS" 문자열로 변환
    *   - 예: 90.5 → "1:30", 3661 → "1:01:01"
    */
-  const formatTimestamp = (seconds: number): string => {
+  const formatTimestamp = useCallback((seconds: number): string => {
     const hours = Math.floor(seconds / 3600);
     const minutes = Math.floor((seconds % 3600) / 60);
     const secs = Math.floor(seconds % 60);
@@ -527,7 +532,7 @@ function App() {
     }
 
     return timeStr;
-  };
+  }, [timestampPrecision]);
 
   // ─── 자막 내 키워드 검색 ──────────────────────────────────────
   /**
@@ -536,13 +541,15 @@ function App() {
    *   - text에 해당 문자열이 포함된 세그먼트를 SearchResult로 수집
    *   - 결과가 없으면 searchResults를 빈 배열로 초기화 (UI에서 "없음" 메시지 표시)
    */
-  const handleSearch = () => {
-    if (!searchQuery.trim() || segments.length === 0) {
+  const handleSearch = (overrideQuery?: string | any) => {
+    const q = typeof overrideQuery === 'string' ? overrideQuery : searchInput;
+    setSearchQuery(q); // 실제 검색 키워드 확정
+    if (!q || !q.trim() || segments.length === 0) {
       setSearchResults([]);
       return;
     }
 
-    const query = searchQuery.toLowerCase();
+    const query = q.toLowerCase();
     const results: SearchResult[] = [];
     const addedIndices = new Set<number>();
 
@@ -605,7 +612,7 @@ function App() {
    * @param startTime   타임스탬프 미포함 모드의 YouTube 열기 시간
    * @param loopRange   슬라이딩 윈듀우로 감지한 실제 히트 범위 (startIdx..endIdx)
    */
-  const openYouTubeAtTime = (
+  const openYouTubeAtTime = useCallback((
     matchIndex: number,
     startTime:  number,
     loopRange?: { startIdx: number; endIdx: number },
@@ -628,11 +635,11 @@ function App() {
       // 시각적 피드백을 위해 잠시 강조 (activeSegIdx를 활용하거나 별도 상태 가능)
       setActiveSegIdx(matchIndex);
     }
-  };
+  }, [interactionMode, playbackOption, videoId]);
 
   // ─── 세그먼트 체크박스 ───────────────────────────────────────────
   /** 체크된 세그먼트 셋에서 연속된 그룹 배열 생성. ex) {1,2,3,7,8} → [[1,2,3],[7,8]] */
-  const findConnectedGroups = (segs: Set<number>): number[][] => {
+  const findConnectedGroups = useCallback((segs: Set<number>): number[][] => {
     const sorted = Array.from(segs).sort((a, b) => a - b);
     const groups: number[][] = [];
     let cur: number[] = [];
@@ -643,10 +650,10 @@ function App() {
     }
     if (cur.length > 0) groups.push(cur);
     return groups;
-  };
+  }, []);
 
   /** 세그먼트 체크박스 토글: 연속 그룹을 찾아 loopConfig 자동 갱신 */
-  const handleSegToggle = (idx: number) => {
+  const handleSegToggle = useCallback((idx: number) => {
     const next = new Set(checkedSegs);
     if (next.has(idx)) { next.delete(idx); } else { next.add(idx); }
 
@@ -665,7 +672,7 @@ function App() {
       endOffset: focusGroup[focusGroup.length - 1] - focusGroup[0],
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
+  }, [checkedSegs, findConnectedGroups]);
 
   /** 전체 선택/해제 */
   const handleSelectAll = (checked: boolean) => {
@@ -684,16 +691,16 @@ function App() {
   };
 
   /** 드래그 선택 이벤트 핸들러 */
-  const handleDragStart = (idx: number) => {
+  const handleDragStart = useCallback((idx: number) => {
     if (!isDragMode) return;
     setDragStartIdx(idx);
     // 드래그 시작 시 새로운 범위를 위해 기존 선택 초기화
     const next = new Set<number>();
     next.add(idx);
     setCheckedSegs(next);
-  };
+  }, [isDragMode]);
 
-  const handleDragEnter = (idx: number) => {
+  const handleDragEnter = useCallback((idx: number) => {
     if (!isDragMode || dragStartIdx === null) return;
     
     // 시작점부터 현재점까지의 범위를 계산하여 체크 상태 업데이트
@@ -701,13 +708,11 @@ function App() {
     const start = Math.min(dragStartIdx, idx);
     const end = Math.max(dragStartIdx, idx);
     
-    // 이 범위 내의 모든 항목을 체크 (시작점의 동작에 맞추는 것이 자연스러움)
-    // 여기서는 단순히 '추가' 모드로 동작하도록 구현 (드래그로 범위를 잡는 일반적인 UX)
     for (let i = start; i <= end; i++) {
       next.add(i);
     }
     setCheckedSegs(next);
-  };
+  }, [isDragMode, dragStartIdx, checkedSegs]);
 
   const handleDragEnd = () => {
     if (!isDragMode || dragStartIdx === null) return;
@@ -795,7 +800,7 @@ function App() {
 
   // ─── 검색어 키워드 하이라이트 헬퍼 ───────────────────────────
   // text를 query 기준으로 분리하여 <mark>로 감싼 React 노드 배열로 반환
-  const highlightText = (text: string, query: string): React.ReactNode => {
+  const highlightText = useCallback((text: string, query: string): React.ReactNode => {
     if (!query.trim()) return text;
     const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
     const parts = text.split(regex);
@@ -804,7 +809,66 @@ function App() {
         ? <mark key={i} className="search-highlight">{part}</mark>
         : part
     );
-  };
+  }, []);
+
+  // ─── 대본 렌더링 메모이제이션 ───────────────────────────
+  // useMemo를 상위 레벨로 이동하여 Hook 규칙 준수 및 타이핑 지연 해결
+  const renderedSegments = useMemo(() => {
+    if (segments.length === 0) return <p className="transcript-text">{transcript}</p>;
+    return (
+      <div className="transcript-segments">
+        {segments.map((seg, i) => {
+          const isActive  = activeSegIdx === i;
+          const isHit     = searchResults.some(r => r.matchIndex === i);
+          return (
+            <div
+              key={i}
+              ref={el => { segmentRefs.current[i] = el; }}
+              className={[
+                'transcript-seg',
+                isActive               ? 'active'   : '',
+                isHit                  ? 'hit'      : '',
+                checkedSegs.has(i)     ? 'checked'  : '',
+                isDragMode             ? 'drag-mode': '',
+                isSeekMode             ? 'seek-mode': '',
+              ].join(' ').trim()}
+              onMouseDown={() => handleDragStart(i)}
+              onMouseEnter={() => handleDragEnter(i)}
+              onClick={isSeekMode ? () => {
+                const player = loopPlayerRef.current;
+                if (player?.seekTo) {
+                  player.seekTo(seg.start, true);
+                  player.playVideo();
+                }
+              } : undefined}
+              title={isSeekMode ? `${formatTimestamp(seg.start)}부터 재생` : undefined}
+            >
+              {/* 체크박스 토글 (구간반복 모드에서만 활성화) */}
+              {loopMode && (
+                <button
+                  className={`seg-check${checkedSegs.has(i) ? ' seg-check--on' : ''}`}
+                  onClick={(e) => { e.stopPropagation(); handleSegToggle(i); }}
+                  title={checkedSegs.has(i) ? '구간에서 제외' : '이 세그먼트를 연속 구간에 포함'}
+                />
+              )}
+              {/* 타임스탬프 버튼 */}
+              <button
+                className="seg-timestamp"
+                onClick={(e) => { if (isSeekMode) e.stopPropagation(); openYouTubeAtTime(i, seg.start); }}
+                title={loopMode ? '클릭 → 이 세그먼트 재생' : '클릭 → YouTube에서 열기'}
+              >
+                {formatTimestamp(seg.start)}
+              </button>
+              {/* 텍스트 (검색 키워드 하이라이트) */}
+              <span className="seg-text">
+                {highlightText(seg.text.trim(), searchQuery && searchResults.length > 0 ? searchQuery : '')}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }, [segments, activeSegIdx, searchResults, checkedSegs, isDragMode, isSeekMode, loopMode, searchQuery, transcript, handleDragStart, handleDragEnter, handleSegToggle, openYouTubeAtTime, formatTimestamp, highlightText]);
 
   // ─── TXT 파일 다운로드 ────────────────────────────────────────
   /**
@@ -1068,11 +1132,19 @@ function App() {
                 <input
                   type="text"
                   placeholder="키워드 검색..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
+                  value={searchInput}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setSearchInput(v);
+                    // 입력이 비어지면 즉시 결과 초기화
+                    if (!v.trim()) {
+                      setSearchQuery('');
+                      setSearchResults([]);
+                    }
+                  }}
                   onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                 />
-                <button className="btn-search" onClick={handleSearch}>
+                <button className="btn-search" onClick={() => handleSearch()}>
                   <Search style={{ width: 11, height: 11 }} /> 검색
                 </button>
               </div>
@@ -1538,62 +1610,7 @@ function App() {
                 onMouseUp={handleDragEnd}
                 onMouseLeave={handleDragEnd}
               >
-                {segments.length > 0 ? (
-                  <div className="transcript-segments">
-                    {segments.map((seg, i) => {
-                      const isActive  = activeSegIdx === i;   // 현재 재생 중인 세그먼트
-                      const isHit     = searchResults.some(r => r.matchIndex === i); // 검색 히트
-                      return (
-                        <div
-                          key={i}
-                          ref={el => { segmentRefs.current[i] = el; }}
-                          className={[
-                            'transcript-seg',
-                            isActive               ? 'active'   : '',
-                            isHit                  ? 'hit'      : '',
-                            checkedSegs.has(i)     ? 'checked'  : '',
-                            isDragMode             ? 'drag-mode': '',
-                            isSeekMode             ? 'seek-mode': '',
-                          ].join(' ').trim()}
-                          onMouseDown={() => handleDragStart(i)}
-                          onMouseEnter={() => handleDragEnter(i)}
-                          onClick={isSeekMode ? () => {
-                            const player = loopPlayerRef.current;
-                            if (player?.seekTo) {
-                              player.seekTo(seg.start, true);
-                              player.playVideo();
-                            }
-                          } : undefined}
-                          title={isSeekMode ? `${formatTimestamp(seg.start)}부터 재생` : undefined}
-                        >
-                          {/* 체크박스 토글 (구간반복 모드에서만 활성화) */}
-                          {loopMode && (
-                            <button
-                              className={`seg-check${checkedSegs.has(i) ? ' seg-check--on' : ''}`}
-                              onClick={(e) => { e.stopPropagation(); handleSegToggle(i); }}
-                              title={checkedSegs.has(i) ? '구간에서 제외' : '이 세그먼트를 연속 구간에 포함'}
-                            />
-                          )}
-                          {/* 타임스탬프 버튼 */}
-                          <button
-                            className="seg-timestamp"
-                            onClick={(e) => { if (isSeekMode) e.stopPropagation(); openYouTubeAtTime(i, seg.start); }}
-                            title={loopMode ? '클릭 → 이 세그먼트 재생' : '클릭 → YouTube에서 열기'}
-                          >
-                            {formatTimestamp(seg.start)}
-                          </button>
-                          {/* 텍스트 (검색 키워드 하이라이트) */}
-                          <span className="seg-text">
-                            {highlightText(seg.text.trim(), searchQuery && searchResults.length > 0 ? searchQuery : '')}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  // 세그먼트 없음 (레거시 평문 transcript)
-                  <p className="transcript-text">{transcript}</p>
-                )}
+                {renderedSegments}
               </div>
 
               {/* 대본 하단 설정 바 */}

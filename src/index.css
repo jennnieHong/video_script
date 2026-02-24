@@ -1137,6 +1137,17 @@ h1, h2, h3, h4 {
   pointer-events: none; /* 텍스트 요소가 마우스 이벤트를 방해하지 않도록 */
 }
 
+/* Seek mode: 줄 전체가 클릭 영역 */
+.transcript-seg.seek-mode {
+  cursor: pointer;
+}
+
+.transcript-seg.seek-mode:hover {
+  background: rgba(99, 102, 241, 0.08);
+  border-left: 2px solid var(--brand-light);
+  padding-left: calc(0.75rem - 2px); /* border 보정 */
+}
+
 /* ─── Error / Empty States ───────────────────────────────── */
 .error-banner {
   display: flex;
@@ -1386,6 +1397,35 @@ h1, h2, h3, h4 {
 
 .transcript-seg.active .seg-text {
   color: var(--text-primary);
+}
+
+/* ─── Segment seek button (play-from-point mode) ─────────── */
+.seg-seek-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(99, 102, 241, 0.4);
+  background: rgba(99, 102, 241, 0.1);
+  color: var(--brand-light);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s, box-shadow 0.15s;
+}
+
+.seg-seek-btn:hover {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+  transform: scale(1.15);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+}
+
+.seg-seek-btn:active {
+  transform: scale(0.95);
 }
 
 /* ─── Segment checkbox (loop range selector) ─────────────── */

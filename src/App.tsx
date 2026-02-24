@@ -347,6 +347,7 @@ function App() {
   const [isTrackingMode, setIsTrackingMode] = useState(true);           // 재생 위치 트래킹 모드 (기본값 ON)
   const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
   const [timestampPrecision, setTimestampPrecision] = useState(0);       // 타임스탬프 정밀도 (0:초, 1:0.1s, 2:0.01s, 3:ms)
+  const [isSeekMode, setIsSeekMode] = useState(false);                  // 선택지점부터 재생 모드 (각 세그먼트에 ▶ 버튼 표시)
 // ─── 언어 목록 조회 ────────────────────────────────────────────
   // URL이 YouTube 영상 링크처럼 보이는지 간단히 확인하는 정규식
   const YT_URL_RE = /(?:youtube\.com\/watch\?v=|youtu\.be\/)([0-9A-Za-z_-]{11})/;
@@ -1338,6 +1339,20 @@ function App() {
                             >
                               <RotateCcw style={{ width: 12, height: 12 }} />
                             </button>
+                            <button
+                              className="btn-result-loop"
+                              title={`${formatTimestamp(result.segment.start)}부터 재생`}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                const player = loopPlayerRef.current;
+                                if (player?.seekTo) {
+                                  player.seekTo(result.segment.start, true);
+                                  player.playVideo();
+                                }
+                              }}
+                            >
+                              <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                            </button>
                           </motion.div>
                         ))}
                       </div>
@@ -1535,13 +1550,22 @@ function App() {
                           ref={el => { segmentRefs.current[i] = el; }}
                           className={[
                             'transcript-seg',
-                            isActive               ? 'active'  : '',
-                            isHit                  ? 'hit'     : '',
-                            checkedSegs.has(i)     ? 'checked' : '',
-                            isDragMode             ? 'drag-mode' : '',
+                            isActive               ? 'active'   : '',
+                            isHit                  ? 'hit'      : '',
+                            checkedSegs.has(i)     ? 'checked'  : '',
+                            isDragMode             ? 'drag-mode': '',
+                            isSeekMode             ? 'seek-mode': '',
                           ].join(' ').trim()}
                           onMouseDown={() => handleDragStart(i)}
                           onMouseEnter={() => handleDragEnter(i)}
+                          onClick={isSeekMode ? () => {
+                            const player = loopPlayerRef.current;
+                            if (player?.seekTo) {
+                              player.seekTo(seg.start, true);
+                              player.playVideo();
+                            }
+                          } : undefined}
+                          title={isSeekMode ? `${formatTimestamp(seg.start)}부터 재생` : undefined}
                         >
                           {/* 체크박스 토글 (구간반복 모드에서만 활성화) */}
                           {loopMode && (
@@ -1554,8 +1578,8 @@ function App() {
                           {/* 타임스탬프 버튼 */}
                           <button
                             className="seg-timestamp"
-                            onClick={() => openYouTubeAtTime(i, seg.start)}
-                            title={loopMode ? '클릭 → 이 세그먼트는자 재생' : '클릭 → YouTube에서 열기'}
+                            onClick={(e) => { if (isSeekMode) e.stopPropagation(); openYouTubeAtTime(i, seg.start); }}
+                            title={loopMode ? '클릭 → 이 세그먼트 재생' : '클릭 → YouTube에서 열기'}
                           >
                             {formatTimestamp(seg.start)}
                           </button>
@@ -1576,6 +1600,28 @@ function App() {
               {/* 대본 하단 설정 바 */}
               <div className="transcript-footer">
                 <div className="footer-controls">
+                  {/* 선택지점부터 재생 모드 */}
+                  <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => setIsSeekMode(v => !v)}>
+                    <div className="mode-toggle-info">
+                      <span className="mode-toggle-icon">
+                        <svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                      </span>
+                      <div className="mode-toggle-texts">
+                        <span className="mode-toggle-title">지점 재생</span>
+                        <span className="mode-toggle-desc">해당 위치부터 재생</span>
+                      </div>
+                    </div>
+                    <div className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={isSeekMode}
+                        onChange={(e) => { e.stopPropagation(); setIsSeekMode(e.target.checked); }}
+                      />
+                      <div className="toggle-track" />
+                      <div className="toggle-thumb" />
+                    </div>
+                  </div>
+
                   {/* 드래그 선택 모드 */}
                   <div className={`mode-toggle-bar ${isDragMode ? 'active' : ''}`} onClick={() => setIsDragMode(v => !v)}>
                     <div className="mode-toggle-info">

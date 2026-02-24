@@ -303,6 +303,7 @@ function App() {
   const [langError, setLangError] = useState('');                         // 언어 조회 실패 메시지
   const [isDragMode, setIsDragMode] = useState(false);                 // 드래그 선택 모드 활성화 여부
   const [dragStartIdx, setDragStartIdx] = useState<number | null>(null); // 드래그 시작 세그먼트 인덱스
+  const [isTrackingMode, setIsTrackingMode] = useState(true);           // 재생 위치 트래킹 모드 (기본값 ON)
 
 
   // ─── 언어 목록 조회 ────────────────────────────────────────────
@@ -616,9 +617,9 @@ function App() {
   const handleDragStart = (idx: number) => {
     if (!isDragMode) return;
     setDragStartIdx(idx);
-    // 드래그 시작 시 해당 항목 포함/해제 결정은 첫 번째 항목의 현재 상태 반전으로 처리
-    const next = new Set(checkedSegs);
-    if (next.has(idx)) { next.delete(idx); } else { next.add(idx); }
+    // 드래그 시작 시 새로운 범위를 위해 기존 선택 초기화
+    const next = new Set<number>();
+    next.add(idx);
     setCheckedSegs(next);
   };
 
@@ -640,20 +641,23 @@ function App() {
 
   const handleDragEnd = () => {
     if (!isDragMode || dragStartIdx === null) return;
+    const start = Math.min(dragStartIdx, Array.from(checkedSegs).sort((a,b)=>a-b)[0] ?? dragStartIdx);
+    const end = Math.max(dragStartIdx, Array.from(checkedSegs).sort((a,b)=>b-a)[0] ?? dragStartIdx);
+    
     setDragStartIdx(null);
     
-    // 드래그 종료 후 loopConfig 갱신
+    // 드래그 종료 후 즉시 재생 모드로 전환하고 구간 설정
     if (checkedSegs.size > 0) {
-      const groups = findConnectedGroups(checkedSegs);
-      if (groups.length > 0) {
-        const lastIdx = Array.from(checkedSegs).sort((a, b) => b - a)[0];
-        const focusGroup = groups.find(g => g.includes(lastIdx)) || groups[0];
-        setLoopConfig({
-          matchIndex: focusGroup[0],
-          startOffset: 0,
-          endOffset: focusGroup[focusGroup.length - 1] - focusGroup[0],
-        });
-      }
+      const sorted = Array.from(checkedSegs).sort((a, b) => a - b);
+      setLoopConfig({
+        matchIndex: sorted[0],
+        startOffset: 0,
+        endOffset: sorted[sorted.length - 1] - sorted[0],
+      });
+      
+      // 사용자 편의를 위해 자동으로 재생 모드 전환
+      setInteractionMode('play');
+      setPlaybackOption('loop');
     }
   };
 
@@ -690,15 +694,17 @@ function App() {
       if (found !== -1) {
         setActiveSegIdx(prev => {
           if (prev !== found) {
-            // 새 활성 세그먼트가 보이도록 스크롤
-            segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            // 트래킹 모드가 활성화되어 있고, 현재 드래그 중이 아닐 때만 스크롤 수행
+            if (isTrackingMode && dragStartIdx === null) {
+              segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            }
           }
           return found;
         });
       }
     }, 200);
     return () => clearInterval(timer);
-  }, [loopMode, loopConfig, segments]);
+  }, [loopMode, loopConfig, segments, isTrackingMode]);
 
   // ─── 검색어 키워드 하이라이트 헬퍼 ───────────────────────────
   // text를 query 기준으로 분리하여 <mark>로 감싼 React 노드 배열로 반환
@@ -1412,26 +1418,51 @@ function App() {
                 )}
               </div>
 
-              {/* 드래그 모드 설정 바 */}
+              {/* 대본 하단 설정 바 */}
               <div className="transcript-footer">
-                <div className="drag-mode-bar" onClick={() => setIsDragMode(v => !v)} style={{ cursor: 'pointer' }}>
-                  <div className="drag-mode-info">
-                    <span className={`drag-mode-icon ${isDragMode ? 'active' : ''}`}>
-                      <svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-2 2-2-2"/><path d="M15 6l-2-2-2 2"/><path d="M18 15l2-2-2-2"/><path d="M6 15l-2-2 2-2"/></svg>
-                    </span>
-                    <div className="drag-mode-texts">
-                      <span className="drag-mode-title">드래그 선택 모드</span>
-                      <span className="drag-mode-desc">마우스로 쓱 긁어서 구간을 지정하세요</span>
+                <div className="footer-controls">
+                  {/* 드래그 선택 모드 */}
+                  <div className={`mode-toggle-bar ${isDragMode ? 'active' : ''}`} onClick={() => setIsDragMode(v => !v)}>
+                    <div className="mode-toggle-info">
+                      <span className="mode-toggle-icon">
+                        <svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-2 2-2-2"/><path d="M15 6l-2-2-2 2"/><path d="M18 15l2-2-2-2"/><path d="M6 15l-2-2 2-2"/></svg>
+                      </span>
+                      <div className="mode-toggle-texts">
+                        <span className="mode-toggle-title">드래그 영역 재생</span>
+                        <span className="mode-toggle-desc">구간 직접 지정</span>
+                      </div>
+                    </div>
+                    <div className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={isDragMode}
+                        onChange={(e) => { e.stopPropagation(); setIsDragMode(e.target.checked); }}
+                      />
+                      <div className="toggle-track" />
+                      <div className="toggle-thumb" />
                     </div>
                   </div>
-                  <div className="toggle">
-                    <input
-                      type="checkbox"
-                      checked={isDragMode}
-                      onChange={(e) => { e.stopPropagation(); setIsDragMode(e.target.checked); }}
-                    />
-                    <div className="toggle-track" />
-                    <div className="toggle-thumb" />
+
+                  {/* 재생 위치 트래킹 */}
+                  <div className={`mode-toggle-bar ${isTrackingMode ? 'active' : ''}`} onClick={() => setIsTrackingMode(v => !v)}>
+                    <div className="mode-toggle-info">
+                      <span className="mode-toggle-icon">
+                        <Search style={{ width: 14, height: 14 }} />
+                      </span>
+                      <div className="mode-toggle-texts">
+                        <span className="mode-toggle-title">위치 트래킹</span>
+                        <span className="mode-toggle-desc">재생 시 자동 스크롤</span>
+                      </div>
+                    </div>
+                    <div className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={isTrackingMode}
+                        onChange={(e) => { e.stopPropagation(); setIsTrackingMode(e.target.checked); }}
+                      />
+                      <div className="toggle-track" />
+                      <div className="toggle-thumb" />
+                    </div>
                   </div>
                 </div>
               </div>

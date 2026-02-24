@@ -304,6 +304,7 @@ function App() {
   const [isDragMode, setIsDragMode] = useState(false);                 // 드래그 선택 모드 활성화 여부
   const [dragStartIdx, setDragStartIdx] = useState<number | null>(null); // 드래그 시작 세그먼트 인덱스
   const [isTrackingMode, setIsTrackingMode] = useState(true);           // 재생 위치 트래킹 모드 (기본값 ON)
+  const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
 
 
   // ─── 언어 목록 조회 ────────────────────────────────────────────
@@ -685,8 +686,9 @@ function App() {
     const timer = setInterval(() => {
       const player = loopPlayerRef.current;
       if (!player?.getCurrentTime) return;
-      const t = player.getCurrentTime();
-      // 현재 재생 시간 t가 속하는 세그먼트를 역방향으로 탐색 (마지막 start <= t)
+      // 현재 시간에 사용자가 설정한 오프셋(초)을 더해 더 빠르게 반응하게 함
+      const t = player.getCurrentTime() + trackingOffset;
+      
       let found = -1;
       for (let i = segments.length - 1; i >= 0; i--) {
         if (segments[i].start <= t) { found = i; break; }
@@ -694,7 +696,6 @@ function App() {
       if (found !== -1) {
         setActiveSegIdx(prev => {
           if (prev !== found) {
-            // 트래킹 모드가 활성화되어 있고, 현재 드래그 중이 아닐 때만 스크롤 수행
             if (isTrackingMode && dragStartIdx === null) {
               segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             }
@@ -702,9 +703,9 @@ function App() {
           return found;
         });
       }
-    }, 200);
+    }, 50); // 200ms -> 50ms로 단축하여 반응성 강화
     return () => clearInterval(timer);
-  }, [loopMode, loopConfig, segments, isTrackingMode]);
+  }, [loopMode, loopConfig, segments, isTrackingMode, dragStartIdx, trackingOffset]);
 
   // ─── 검색어 키워드 하이라이트 헬퍼 ───────────────────────────
   // text를 query 기준으로 분리하여 <mark>로 감싼 React 노드 배열로 반환
@@ -1447,7 +1448,7 @@ function App() {
                   <div className={`mode-toggle-bar ${isTrackingMode ? 'active' : ''}`} onClick={() => setIsTrackingMode(v => !v)}>
                     <div className="mode-toggle-info">
                       <span className="mode-toggle-icon">
-                        <Search style={{ width: 14, height: 14 }} />
+                        <Clock style={{ width: 14, height: 14 }} />
                       </span>
                       <div className="mode-toggle-texts">
                         <span className="mode-toggle-title">위치 트래킹</span>
@@ -1465,6 +1466,38 @@ function App() {
                     </div>
                   </div>
                 </div>
+
+                {/* 싱크 미세 조정 (트래킹 모드 시에만 표시) */}
+                <AnimatePresence>
+                  {isTrackingMode && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: 10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: 10 }}
+                      className="sync-adjust-bar"
+                    >
+                      <div className="sync-info">
+                        <RotateCcw style={{ width: 12, height: 12, color: 'var(--brand-light)' }} />
+                        <span className="sync-label">싱크 조정</span>
+                        <span className="sync-value">
+                          {trackingOffset > 0 ? `+${trackingOffset.toFixed(1)}s` : `${trackingOffset.toFixed(1)}s`}
+                          <span className="sync-hint">({trackingOffset > 0 ? '빨리' : '느리게'})</span>
+                        </span>
+                      </div>
+                      <div className="sync-controls">
+                        <button className="sync-btn" onClick={() => setTrackingOffset(prev => prev - 0.1)} title="0.1초 늦게">-</button>
+                        <input 
+                          type="range" min="-3" max="3" step="0.1" 
+                          value={trackingOffset} 
+                          onChange={(e) => setTrackingOffset(parseFloat(e.target.value))}
+                          className="sync-slider"
+                        />
+                        <button className="sync-btn" onClick={() => setTrackingOffset(prev => prev + 0.1)} title="0.1초 빨리">+</button>
+                        <button className="sync-reset" onClick={() => setTrackingOffset(0.3)}>초기화</button>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
             </motion.div>
           )}

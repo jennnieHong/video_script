@@ -997,6 +997,112 @@ h1, h2, h3, h4 {
   color: var(--text-muted);
 }
 
+/* ─── Sync Adjust Bar ────────────────────────────────────── */
+.sync-adjust-bar {
+  margin-top: 0.5rem;
+  padding: 0.6rem 1rem;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.sync-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.sync-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.sync-value {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--brand-light);
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.sync-hint {
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+.sync-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  justify-content: flex-end;
+}
+
+.sync-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text-primary);
+  font-weight: 700;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s;
+}
+
+.sync-btn:hover {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+.sync-slider {
+  flex: 0 1 120px;
+  height: 4px;
+  background: var(--surface-3);
+  border-radius: 100px;
+  appearance: none;
+  outline: none;
+  cursor: pointer;
+}
+
+.sync-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--brand-light);
+  border: 2px solid white;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+}
+
+.sync-reset {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.sync-reset:hover {
+  color: var(--text-primary);
+  border-color: var(--text-muted);
+}
+
 /* Drag mode active state for segments */
 .transcript-seg.drag-mode {
   user-select: none; /* 드래그 모드일 때는 텍스트 선택 방지 */

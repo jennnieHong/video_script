@@ -284,6 +284,16 @@ function App() {
   // activeSegIdx: LoopPlayer 재생 중 현재 재생 위치에 해당하는 세그먼트 인덱스
   // -1이면 비활성 (재생 안 함 또는 세그먼트 없음)
   const [activeSegIdx, setActiveSegIdx] = useState<number>(-1);
+  const activeSegIdxRef = useRef<number>(-1);
+
+  // DOM 직접 조작으로 active 클래스 전환 (렌더링 없음)
+  const updateActiveSegDom = useCallback((newIdx: number) => {
+    const prev = activeSegIdxRef.current;
+    if (prev === newIdx) return;
+    if (prev >= 0) segmentRefs.current[prev]?.classList.remove('active');
+    if (newIdx >= 0) segmentRefs.current[newIdx]?.classList.add('active');
+    activeSegIdxRef.current = newIdx;
+  }, []);
 
   // segmentRefs: 각 세그먼트 DOM 요소에 대한 ref 배열 (자동 스크롤용)
   const segmentRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -298,6 +308,12 @@ function App() {
   // - 'once': 앱 내 플레이어로 해당 구간만 1번 재생 후 멈춤
   // - 'popup': 새 창에서 해당 시간대 열기
   const [playbackOption, setPlaybackOption] = useState<'loop' | 'once' | 'popup'>('loop');
+  const interactionModeRef = useRef(interactionMode);
+  const playbackOptionRef = useRef(playbackOption);
+  const videoIdRef = useRef(videoId);
+  interactionModeRef.current = interactionMode;
+  playbackOptionRef.current = playbackOption;
+  videoIdRef.current = videoId;
 
   // loopConfig: 구간반복 모드에서 현재 재생 중인 구간 설정
   //   - 클릭 즉시 설정되어 LoopPlayer가 바로 시작됨
@@ -344,7 +360,19 @@ function App() {
   // pendingUrl: Whisper 확인 모달이 뜬 동안 임시 저장된 요청 URL
 
   const [checkedSegs, setCheckedSegs] = useState<Set<number>>(new Set());
-  // checkedSegs: 루프 구간 정의용 체크박스; 연속된 인덱스들이 하나의 loopConfig 구간으로 합산됨
+  const checkedSegsRef = useRef<Set<number>>(new Set());
+
+  // checkedSegs DOM 동기화: 모든 세그먼트의 checked/seg-check--on 클래스 갱신
+  const syncCheckedDom = useCallback((segs: Set<number>) => {
+    checkedSegsRef.current = segs;
+    segmentRefs.current.forEach((el, i) => {
+      if (!el) return;
+      const isChecked = segs.has(i);
+      el.classList.toggle('checked', isChecked);
+      const btn = el.querySelector('.seg-check');
+      if (btn) btn.classList.toggle('seg-check--on', isChecked);
+    });
+  }, []);
 
   // ─── 언어 선택 관련 상태 ────────────────────────────────────────
   interface LangOption { code: string; name: string; label: string; is_generated: boolean; }
@@ -365,8 +393,16 @@ function App() {
   const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
   const [timestampPrecision, setTimestampPrecision] = useState(0);       // 타임스탬프 정밀도 (0:초, 1:0.1s, 2:0.01s, 3:ms)
   const [isSeekMode, setIsSeekMode] = useState(false);                  // 선택지점부터 재생 모드 (각 세그먼트에 ▶ 버튼 표시)
+  const isDragModeRef = useRef(false);
+  const isSeekModeRef = useRef(false);
+  // ref 동기화
+  isDragModeRef.current = isDragMode;
+  isSeekModeRef.current = isSeekMode;
+  const [playCtrlOpen, setPlayCtrlOpen] = useState(false);              // 재생 컨트롤 접이식 열림 상태
   const [showTranslation, setShowTranslation] = useState(false);         // 발음 자막 편집 패널 표시
   const [translations, setTranslations] = useState<Record<number, string>>({}); // 세그먼트별 발음 텍스트
+  const translationsRef = useRef<Record<number, string>>({});
+  translationsRef.current = translations;
   const [clipQuality, setClipQuality] = useState<'360'|'480'|'720'|'1080'|'best'|'vertical'>('720'); // 클립 다운로드 해상도
   const [burnSubs,   setBurnSubs]   = useState(false);                    // 자막 굽기 모드
   const [subStyle,   setSubStyle]   = useState({                          // 자막 스타일
@@ -641,25 +677,21 @@ function App() {
     startTime:  number,
     loopRange?: { startIdx: number; endIdx: number },
   ) => {
-    if (interactionMode === 'play') {
-      // 'loop' 또는 'once' 모드이면 앱 내 플레이어(LoopPlayer) 사용
-      if (playbackOption === 'loop' || playbackOption === 'once') {
+    if (interactionModeRef.current === 'play') {
+      if (playbackOptionRef.current === 'loop' || playbackOptionRef.current === 'once') {
         const base     = loopRange?.startIdx ?? matchIndex;
         const endIdx   = loopRange?.endIdx   ?? matchIndex;
         const endOffset = Math.max(0, endIdx - base);
         setLoopConfig({ matchIndex: base, startOffset: 0, endOffset });
       } else {
-        // 'popup' 모드: 기존처럼 새 창에서 YouTube 열기
         const timeInSeconds = Math.floor(startTime);
-        window.open(`https://www.youtube.com/watch?v=${videoId}&t=${timeInSeconds}s`, '_blank');
+        window.open(`https://www.youtube.com/watch?v=${videoIdRef.current}&t=${timeInSeconds}s`, '_blank');
       }
     } else {
-      // 'search' 모드: 대본 영역에서 해당 위치로 스크롤 이동
       segmentRefs.current[matchIndex]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      // 시각적 피드백을 위해 잠시 강조 (activeSegIdx를 활용하거나 별도 상태 가능)
-      setActiveSegIdx(matchIndex);
+      updateActiveSegDom(matchIndex);
     }
-  }, [interactionMode, playbackOption, videoId]);
+  }, []);
 
   // ─── 세그먼트 체크박스 ───────────────────────────────────────────
   /** 체크된 세그먼트 셋에서 연속된 그룹 배열 생성. ex) {1,2,3,7,8} → [[1,2,3],[7,8]] */
@@ -678,11 +710,11 @@ function App() {
 
   /** 세그먼트 체크박스 토글: 연속 그룹을 찾아 loopConfig 자동 갱신 */
   const handleSegToggle = useCallback((idx: number) => {
-    const next = new Set(checkedSegs);
+    const next = new Set(checkedSegsRef.current);
     if (next.has(idx)) { next.delete(idx); } else { next.add(idx); }
 
     const groups = findConnectedGroups(next);
-    if (groups.length === 0) { setCheckedSegs(new Set()); setLoopConfig(null); return; }
+    if (groups.length === 0) { setCheckedSegs(new Set()); syncCheckedDom(new Set()); setLoopConfig(null); return; }
 
     const focusGroup =
       groups.find(g => g.includes(idx)) ??
@@ -690,13 +722,14 @@ function App() {
       groups[0];
 
     setCheckedSegs(next);
+    syncCheckedDom(next);
     setLoopConfig({
       matchIndex: focusGroup[0],
       startOffset: 0,
       endOffset: focusGroup[focusGroup.length - 1] - focusGroup[0],
     });
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [checkedSegs, findConnectedGroups]);
+  }, [findConnectedGroups, syncCheckedDom]);
 
   /** 전체 선택/해제 */
   const handleSelectAll = (checked: boolean) => {
@@ -704,12 +737,13 @@ function App() {
       const all = new Set<number>();
       for (let i = 0; i < segments.length; i++) all.add(i);
       setCheckedSegs(all);
-      // 전체 선택 시 첫 번째 세그먼트부터 마지막까지 loopConfig 설정
+      syncCheckedDom(all);
       if (segments.length > 0) {
         setLoopConfig({ matchIndex: 0, startOffset: 0, endOffset: segments.length - 1 });
       }
     } else {
       setCheckedSegs(new Set());
+      syncCheckedDom(new Set());
       setLoopConfig(null);
     }
   };
@@ -728,28 +762,24 @@ function App() {
 
   /** 드래그 선택 이벤트 핸들러 */
   const handleDragStart = useCallback((idx: number) => {
-    if (!isDragMode || isSeekMode) return; // 지점 재생 모드일 때는 드래그 무시
+    if (!isDragModeRef.current || isSeekModeRef.current) return;
     dragStartIdxRef.current   = idx;
     dragCurrentIdxRef.current = idx;
-    // state 갱신: 트래킹 인터벌 일시 정지 목적만
     setDragStartIdx(idx);
-    // React state 변경 없이 DOM 직접 조작 → 이 리렌더로 renderedSegments 재계산 없음
     applyDragHighlight(idx, idx);
-  }, [isDragMode, isSeekMode, applyDragHighlight]);
+  }, [applyDragHighlight]);
 
   const handleDragEnter = useCallback((idx: number) => {
     const startIdx = dragStartIdxRef.current;
-    if (!isDragMode || startIdx === null) return;
-    // 현재 위치 ref 갱신 → handleDragEnd가 stale closure 없이 마지막 위치를 읽음
+    if (!isDragModeRef.current || startIdx === null) return;
     dragCurrentIdxRef.current = idx;
-    // setCheckedSegs 대신 DOM 직접 조작 → 드래그 중 리렌더 완전 0회
     applyDragHighlight(startIdx, idx);
-  }, [isDragMode, applyDragHighlight]);
+  }, [applyDragHighlight]);
 
   const handleDragEnd = () => {
     const startIdx   = dragStartIdxRef.current;
     const currentIdx = dragCurrentIdxRef.current;
-    if (!isDragMode || startIdx === null) return;
+    if (!isDragModeRef.current || startIdx === null) return;
 
     dragStartIdxRef.current   = null;
     dragCurrentIdxRef.current = null;
@@ -789,23 +819,23 @@ function App() {
 
   // loopConfig/multiRanges 변경 시 checkedSegs 동기화
   useEffect(() => {
-    // 다중 구간 모드: 모든 구간의 합집합을 체크로 표시
     if (isMultiRangeMode && multiRanges.length > 0) {
       const ns = new Set<number>();
       multiRanges.forEach(r => {
         for (let i = r.startIdx; i <= r.endIdx; i++) ns.add(i);
       });
       setCheckedSegs(ns);
+      syncCheckedDom(ns);
       return;
     }
-    // 단일 구간 모드: loopConfig 기준
-    if (!loopConfig || segments.length === 0) { setCheckedSegs(new Set()); return; }
+    if (!loopConfig || segments.length === 0) { setCheckedSegs(new Set()); syncCheckedDom(new Set()); return; }
     const s = Math.max(0, loopConfig.matchIndex - loopConfig.startOffset);
     const e = Math.min(segments.length - 1, loopConfig.matchIndex + loopConfig.endOffset);
     const ns = new Set<number>();
     for (let i = s; i <= e; i++) ns.add(i);
     setCheckedSegs(ns);
-  }, [loopConfig, segments, isMultiRangeMode, multiRanges]);
+    syncCheckedDom(ns);
+  }, [loopConfig, segments, isMultiRangeMode, multiRanges, syncCheckedDom]);
 
   // ─── 재생 중 활성 세그먼트 감지 → 자동 스크롤 ─────────────────
   // LoopPlayer의 YT.Player 인스턴스에 직접 접근하기 어려우므로,
@@ -816,20 +846,17 @@ function App() {
   useEffect(() => {
     // 트래킹 모드 꺼져 있거나 세그먼트 없으면 종료
     if (!isTrackingMode || segments.length === 0) {
-      setActiveSegIdx(-1);
+      updateActiveSegDom(-1);
       return;
     }
-    // 드래그 중에는 폴링 인터벌 자체를 생성하지 않음
-    // → setInterval이 없으면 불필요한 getCurrentTime 호출 및 렌더 방해 없음
     if (dragStartIdx !== null) return;
 
     const timer = setInterval(() => {
       const player = loopPlayerRef.current;
       if (!player?.getCurrentTime) return;
 
-      // 재생 중(state=1)인지 확인: 정지 상태에서는 스크롤 하지 않음
       const state = player.getPlayerState?.();
-      if (state !== 1) return; // 1 = PLAYING
+      if (state !== 1) return;
 
       const t = player.getCurrentTime() + trackingOffset;
 
@@ -838,12 +865,12 @@ function App() {
         if (segments[i].start <= t) { found = i; break; }
       }
       if (found !== -1) {
-        setActiveSegIdx(found);
+        updateActiveSegDom(found);
         segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
       }
     }, 50);
     return () => clearInterval(timer);
-  }, [segments, isTrackingMode, dragStartIdx, trackingOffset]);
+  }, [segments, isTrackingMode, dragStartIdx, trackingOffset, updateActiveSegDom]);
 
   // ─── 다중 구간 순차 재생 ──────────────────────────────────────
   // gapTimerRef / isInGapRef: 구간 간격 대기 상태 관리
@@ -942,7 +969,6 @@ function App() {
     return (
       <div className="transcript-segments">
         {segments.map((seg, i) => {
-          const isActive  = activeSegIdx === i;
           const isHit     = searchResults.some(r => r.matchIndex === i);
           return (
             <div
@@ -950,37 +976,29 @@ function App() {
               ref={el => { segmentRefs.current[i] = el; }}
               className={[
                 'transcript-seg',
-                isActive               ? 'active'   : '',
                 isHit                  ? 'hit'      : '',
-                checkedSegs.has(i)     ? 'checked'  : '',
-                isDragMode             ? 'drag-mode': '',
-                isSeekMode             ? 'seek-mode': '',
               ].join(' ').trim()}
-              onMouseDown={() => { if (!isSeekMode) handleDragStart(i); }}
-              onMouseEnter={() => { if (!isSeekMode) handleDragEnter(i); }}
-              onClick={isSeekMode ? () => {
-                // 드래그 구간 해제 → 자유 재생
+              onMouseDown={() => { if (!isSeekModeRef.current) handleDragStart(i); }}
+              onMouseEnter={() => { if (!isSeekModeRef.current) handleDragEnter(i); }}
+              onClick={() => {
+                if (!isSeekModeRef.current) return;
                 setLoopConfig(null);
                 const player = loopPlayerRef.current;
                 if (player?.seekTo) {
                   player.seekTo(seg.start, true);
                   player.playVideo();
                 }
-              } : undefined}
-              title={isSeekMode ? `${formatTimestamp(seg.start)}부터 재생` : undefined}
+              }}
             >
-              {/* 체크박스 토글 (구간반복 모드에서만 활성화) */}
-              {loopMode && (
-                <button
-                  className={`seg-check${checkedSegs.has(i) ? ' seg-check--on' : ''}`}
-                  onClick={(e) => { e.stopPropagation(); handleSegToggle(i); }}
-                  title={checkedSegs.has(i) ? '구간에서 제외' : '이 세그먼트를 연속 구간에 포함'}
-                />
-              )}
+              {/* 체크박스 토글 (구간반복 모드에서만 표시 — CSS display로 제어) */}
+              <button
+                className="seg-check"
+                onClick={(e) => { e.stopPropagation(); handleSegToggle(i); }}
+              />
               {/* 타임스탬프 버튼 */}
               <button
                 className="seg-timestamp"
-                onClick={(e) => { if (isSeekMode) e.stopPropagation(); openYouTubeAtTime(i, seg.start); }}
+                onClick={(e) => { if (isSeekModeRef.current) e.stopPropagation(); openYouTubeAtTime(i, seg.start); }}
                 title={loopMode ? '클릭 → 이 세그먼트 재생' : '클릭 → YouTube에서 열기'}
               >
                 {formatTimestamp(seg.start)}
@@ -989,27 +1007,26 @@ function App() {
               <span className="seg-text">
                 {highlightText(seg.text.trim(), searchQuery && searchResults.length > 0 ? searchQuery : '')}
               </span>
-              {/* 발음 자막 입력 */}
-              {showTranslation && (
-                <input
-                  className="seg-translation"
-                  type="text"
-                  placeholder="발음 입력..."
-                  value={translations[i] || ''}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setTranslations(prev => ({ ...prev, [i]: val }));
-                  }}
-                  onClick={(e) => e.stopPropagation()}
-                  onMouseDown={(e) => e.stopPropagation()}
-                />
-              )}
+              {/* 발음 자막 입력 — CSS display로 제어 */}
+              <input
+                className="seg-translation"
+                type="text"
+                placeholder="발음 입력..."
+                defaultValue={translations[i] || ''}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  translationsRef.current = { ...translationsRef.current, [i]: val };
+                  setTranslations(prev => ({ ...prev, [i]: val }));
+                }}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              />
             </div>
           );
         })}
       </div>
     );
-  }, [segments, activeSegIdx, searchResults, checkedSegs, isDragMode, isSeekMode, loopMode, searchQuery, transcript, showTranslation, translations, handleDragStart, handleDragEnter, handleSegToggle, openYouTubeAtTime, formatTimestamp, highlightText]);
+  }, [segments, searchResults, searchQuery, transcript, handleDragStart, handleDragEnter, handleSegToggle, openYouTubeAtTime, formatTimestamp, highlightText]);
 
   // ─── TXT 파일 다운로드 ────────────────────────────────────────
   /**
@@ -1168,7 +1185,7 @@ function App() {
       </nav>
 
       {/* ── Main Layout ──────────────────────────────────────── */}
-      <div className={`main-content${hasResult ? '' : ' hero-layout'}${hasResult && loopMode && loopConfig && loopSegment ? ' has-clip-panel' : ''}`}>
+      <div className={`main-content${hasResult ? ' has-clip-panel' : ' hero-layout'}`}>
 
         {/* ══ 좌측 패널: 입력 & 컨트롤 ══════════════════════════ */}
         <aside className="left-panel">
@@ -1615,10 +1632,14 @@ function App() {
           {/* 재생 컨트롤 (결과 있을 때만) */}
           {hasResult && (
             <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="controls-block">
-              <p className="section-label">
+              <p className="section-label collapsible-header" onClick={() => setPlayCtrlOpen(v => !v)} style={{ cursor: 'pointer', userSelect: 'none' }}>
                 <svg style={{ width: 11, height: 11 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                 재생 컨트롤
+                <svg className={`collapse-chevron ${playCtrlOpen ? 'open' : ''}`} style={{ width: 12, height: 12, marginLeft: 'auto', transition: 'transform 0.2s' }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
               </p>
+              <AnimatePresence>
+              {playCtrlOpen && (
+                <motion.div key="play-ctrl-body" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
               <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => { const next = !isSeekMode; setIsSeekMode(next); if (next) setLoopConfig(null); }}>
                 <div className="mode-toggle-info">
                   <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg></span>
@@ -1665,6 +1686,9 @@ function App() {
                     </div>
                   </motion.div>
                 )}
+              </AnimatePresence>
+                </motion.div>
+              )}
               </AnimatePresence>
             </motion.div>
           )}
@@ -1956,7 +1980,7 @@ function App() {
 
               {/* 자막 — 세그먼트별 렌더링 (하이라이트 + 재생 위치 추적) */}
               <div 
-                className="transcript-scroll" 
+                className={`transcript-scroll${isDragMode ? ' drag-mode' : ''}${isSeekMode ? ' seek-mode' : ''}${loopMode ? ' loop-mode' : ''}${showTranslation ? ' show-translation' : ''}`}
                 onMouseUp={handleDragEnd}
                 onMouseLeave={handleDragEnd}
               >

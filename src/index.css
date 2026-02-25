@@ -362,6 +362,29 @@ h1, h2, h3, h4 {
   margin-bottom: 0.25rem;
 }
 
+/* Collapsible header */
+.collapsible-header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0;
+  border-radius: 6px;
+  transition: color 0.15s;
+}
+
+.collapsible-header:hover {
+  color: var(--text-secondary);
+}
+
+.collapse-chevron {
+  transform: rotate(-90deg);
+  transition: transform 0.2s ease;
+}
+
+.collapse-chevron.open {
+  transform: rotate(0deg);
+}
+
 .control-row {
   display: flex;
   align-items: center;
@@ -1470,6 +1493,7 @@ h1, h2, h3, h4 {
 
 /* 발음 자막 입력 */
 .seg-translation {
+  display: none;
   flex: 1;
   min-width: 0;
   padding: 0.2rem 0.5rem;
@@ -1525,6 +1549,7 @@ h1, h2, h3, h4 {
 
 /* ─── Segment checkbox (loop range selector) ─────────────── */
 .seg-check {
+  display: none;
   flex-shrink: 0;
   width: 14px;
   height: 14px;
@@ -1536,6 +1561,15 @@ h1, h2, h3, h4 {
   margin-top: 0;
   transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
   position: relative;
+}
+
+/* 부모 클래스로 표시 제어 */
+.loop-mode .seg-check {
+  display: block;
+}
+
+.show-translation .seg-translation {
+  display: block;
 }
 
 .seg-check:hover {

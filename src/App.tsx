@@ -98,45 +98,56 @@ function LoopPlayer({
     }
   }, [start, end, playbackMode]);
 
-  // ── 구간 감시 인터벌 관리 ──────────────────────────────────
-  // playbackMode, start, end 중 하나라도 바뀌면 기존 인터벌을 끄고 새로 시작 (새 클릭 대응)
+  // ── 구간 감시: 스마트 setTimeout 체인 ──────────────────────────
+  // 종료까지 남은 시간을 계산하여 정확한 시점에만 감지 → API 호출 최소화
   useEffect(() => {
-    if (intervalRef.current) clearInterval(intervalRef.current);
     if (playbackMode === 'none') return;
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
 
-    intervalRef.current = setInterval(() => {
+    const check = () => {
+      if (cancelled) return;
       const player = playerRef.current;
-      if (!player?.getCurrentTime) return;
+      if (!player?.getCurrentTime) { timerId = setTimeout(check, 500); return; }
+
+      const state = player.getPlayerState?.();
+      if (state !== 1) { timerId = setTimeout(check, 300); return; } // 재생 중 아니면 느리게
 
       const currentTime = player.getCurrentTime();
-      const state = player.getPlayerState?.();
       const s = startRef.current;
       const e = endRef.current;
+      if (e <= s || e <= 0.1) { timerId = setTimeout(check, 500); return; }
 
-      // 안전 장치: 시작/종료 시간이 같거나 음수면 체크 건너뜀 (렉 방지)
-      if (e <= s || e <= 0.1) return;
+      const remaining = e - currentTime;
 
-      // 구간 종료 감지 (0.1s 여유)
-      if (currentTime >= e - 0.1 || state === 0) {
+      if (remaining <= 0.05) {
+        // 종료 도달 → 액션
         if (playbackMode === 'loop') {
           player.seekTo(s, true);
           player.playVideo();
+          timerId = setTimeout(check, 200); // 루프 재시작 후 약간 대기
         } else if (playbackMode === 'once') {
           player.pauseVideo();
-          player.seekTo(e, true); 
-          // 1번 재생이 끝나면 이 인터벌을 종료하여 불필요한 체크 방지
-          if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-          }
+          player.seekTo(e, true);
+          // once 모드 종료 → 타이머 중단
+          return;
         }
+      } else if (remaining <= 1) {
+        // 종료 1초 이내 → 정밀 타이밍
+        timerId = setTimeout(check, Math.max(20, (remaining - 0.05) * 1000));
+      } else {
+        // 여유 있음 → 느리게 체크
+        timerId = setTimeout(check, Math.min(500, (remaining - 1) * 1000));
       }
-    }, 150);
+    };
+
+    check();
 
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      cancelled = true;
+      if (timerId) clearTimeout(timerId);
     };
-  }, [playbackMode, start, end]); // 의존성 추가: 새 클릭 시 인터벌 리셋
+  }, [playbackMode, start, end]);
 
   // ── YT.Player 인스턴스 생성 ───────────────────────────────
   useEffect(() => {
@@ -261,6 +272,28 @@ interface SearchResult {
   loopEndIdx: number;    // 슬라이딩 윈듀우 히트가 끝나는 세그먼트 인덱스
 }
 
+// ─── 대본 저장/불러오기 ─────────────────────────────────────────────
+const SCRIPTS_STORAGE_KEY = 'youtube-scribe-scripts';
+
+interface SavedScript {
+  id: string;
+  videoId: string;
+  title: string;
+  segments: Segment[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+function loadAllScripts(): SavedScript[] {
+  try {
+    const raw = localStorage.getItem(SCRIPTS_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function saveAllScripts(scripts: SavedScript[]) {
+  localStorage.setItem(SCRIPTS_STORAGE_KEY, JSON.stringify(scripts));
+}
 
 // ================================================================
 // App 컴포넌트 (메인)
@@ -281,7 +314,50 @@ function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [showModePanel, setShowModePanel] = useState(false);
   const [showSearchResults, setShowSearchResults] = useState(false);
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]); // 검색 결과 목록
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+
+  // ─── 대본 저장/불러오기 state ────────────────────────────────────
+  const savedScriptsRef = useRef<SavedScript[]>(loadAllScripts());
+  const [showScriptsPanel, setShowScriptsPanel] = useState(false);
+  const scriptTitleRef = useRef<HTMLInputElement>(null);
+  const [activeScriptId, setActiveScriptId] = useState<string | null>(null);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [, forceScriptsUpdate] = useState(0); // 패널 목록 갱신용
+
+  const handleSaveScript = () => {
+    const title = scriptTitleRef.current?.value?.trim() || `대본 ${new Date().toLocaleString('ko')}`;
+    const now = new Date().toISOString();
+    const id = activeScriptId || `${videoId}_${Date.now()}`;
+    const newScript: SavedScript = {
+      id, videoId, title,
+      segments: [...segments],
+      createdAt: savedScriptsRef.current.find(s => s.id === id)?.createdAt || now,
+      updatedAt: now,
+    };
+    const updated = activeScriptId
+      ? savedScriptsRef.current.map(s => s.id === id ? newScript : s)
+      : [...savedScriptsRef.current, newScript];
+    saveAllScripts(updated);
+    savedScriptsRef.current = updated;
+    setActiveScriptId(id);
+    if (scriptTitleRef.current) scriptTitleRef.current.value = title;
+  };
+
+  const handleLoadScript = (script: SavedScript) => {
+    setSegments(script.segments);
+    setTranscript(script.segments.map(s => s.text).join(' '));
+    setActiveScriptId(script.id);
+    if (scriptTitleRef.current) scriptTitleRef.current.value = script.title;
+    setShowScriptsPanel(false);
+  };
+
+  const handleDeleteScript = (id: string) => {
+    const updated = savedScriptsRef.current.filter(s => s.id !== id);
+    saveAllScripts(updated);
+    savedScriptsRef.current = updated;
+    if (activeScriptId === id) setActiveScriptId(null);
+    forceScriptsUpdate(n => n + 1);
+  };
 
   // activeSegIdx: LoopPlayer 재생 중 현재 재생 위치에 해당하는 세그먼트 인덱스
   // -1이면 비활성 (재생 안 함 또는 세그먼트 없음)
@@ -336,9 +412,15 @@ function App() {
     const { matchIndex, startOffset, endOffset } = loopConfig;
     const startSegIdx = Math.max(0, matchIndex - startOffset);
     const endSegIdx   = Math.min(segments.length - 1, matchIndex + endOffset);
+    const startTime   = segments[startSegIdx].start;
+    // 종료 시점: 마지막 세그먼트가 아니면 다음 세그먼트의 시작 직전 사용 (겹침 방지)
+    const nextSeg     = segments[endSegIdx + 1];
+    const endTime     = nextSeg
+      ? nextSeg.start  // 다음 세그먼트 시작 = 현재 세그먼트의 실제 종료
+      : segments[endSegIdx].start + segments[endSegIdx].duration;
     return {
-      start: Math.floor(segments[startSegIdx].start),
-      end:   Math.floor(segments[endSegIdx].start + segments[endSegIdx].duration),
+      start: startTime,
+      end:   endTime,
       startSegIdx,
       endSegIdx,
       startSeg: segments[startSegIdx],
@@ -403,7 +485,7 @@ function App() {
   // ref 동기화
   isDragModeRef.current = isDragMode;
   isSeekModeRef.current = isSeekMode;
-  const [playCtrlOpen, setPlayCtrlOpen] = useState(false);              // 재생 컨트롤 접이식 열림 상태
+  const [playCtrlOpen, setPlayCtrlOpen] = useState(true);              // 재생 컨트롤 접이식 열림 상태
   const [showTranslation, setShowTranslation] = useState(false);         // 발음 자막 편집 패널 표시
   const [translations, setTranslations] = useState<Record<number, string>>({}); // 세그먼트별 발음 텍스트
   const translationsRef = useRef<Record<number, string>>({});
@@ -1061,18 +1143,47 @@ function App() {
                 className="seg-check"
                 onClick={(e) => { e.stopPropagation(); handleSegToggle(i); }}
               />
-              {/* 타임스탬프 버튼 */}
+              {/* 타임스탬프: 일반 모드 */}
               <button
-                className="seg-timestamp"
+                className="seg-timestamp seg-time-display"
                 onClick={(e) => { if (isSeekModeRef.current) e.stopPropagation(); openYouTubeAtTime(i, seg.start); }}
                 title={loopMode ? '클릭 → 이 세그먼트 재생' : '클릭 → YouTube에서 열기'}
               >
                 {formatTimestamp(seg.start)}
               </button>
-              {/* 텍스트 (검색 키워드 하이라이트) */}
-              <span className="seg-text">
+              {/* 타임스탬프: 편집 모드 */}
+              <input
+                className="seg-timestamp seg-edit-time"
+                type="text"
+                defaultValue={seg.start.toFixed(2)}
+                onBlur={(e) => {
+                  const v = parseFloat(e.target.value);
+                  if (!isNaN(v) && v !== seg.start) {
+                    setSegments(prev => prev.map((s, j) => j === i ? { ...s, start: v } : s));
+                  }
+                }}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+                title="시작 시간 (초)"
+              />
+              {/* 텍스트: 일반 모드 */}
+              <span className="seg-text seg-text-display">
                 {highlightText(seg.text.trim(), searchQuery && searchResults.length > 0 ? searchQuery : '')}
               </span>
+              {/* 텍스트: 편집 모드 */}
+              <input
+                className="seg-text seg-edit-text"
+                type="text"
+                defaultValue={seg.text.trim()}
+                onBlur={(e) => {
+                  const v = e.target.value;
+                  if (v !== seg.text) {
+                    setSegments(prev => prev.map((s, j) => j === i ? { ...s, text: v } : s));
+                  }
+                }}
+                onClick={(e) => e.stopPropagation()}
+                onMouseDown={(e) => e.stopPropagation()}
+              />
               {/* 발음 자막 입력 — CSS display로 제어 */}
               <input
                 className="seg-translation"
@@ -1661,6 +1772,15 @@ function App() {
                   )}
                 </span>
                 <button
+                  className={`btn-icon${isEditMode ? ' active' : ''}`}
+                  onClick={() => setIsEditMode(v => !v)}
+                  title="세그먼트 편집 모드"
+                  disabled={segments.length === 0}
+                >
+                  <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  편집
+                </button>
+                <button
                   className={`btn-icon${copied ? ' success' : ''}`}
                   onClick={copyToClipboard}
                   title="클립보드에 복사"
@@ -1851,6 +1971,94 @@ function App() {
                   </AnimatePresence>
                 </div>
                 <div className="divider-v" />
+                {/* ── 대본 저장/불러오기 ── */}
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                  <button className="btn-icon" onClick={handleSaveScript} title="현재 대본 저장" disabled={segments.length === 0}>
+                    <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+                    {activeScriptId ? '덮어쓰기' : '저장'}
+                  </button>
+                  <button
+                    className={`btn-icon${showScriptsPanel ? ' active' : ''}`}
+                    onClick={() => { savedScriptsRef.current = loadAllScripts(); forceScriptsUpdate(n => n + 1); setShowScriptsPanel(v => !v); }}
+                    title="저장된 대본 관리"
+                  >
+                    <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                    목록
+                  </button>
+
+                  {/* 대본 관리 플로팅 패널 */}
+                  <AnimatePresence>
+                    {showScriptsPanel && (
+                      <motion.div
+                        key="scripts-panel"
+                        initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                        transition={{ duration: 0.15 }}
+                        className="floating-panel scripts-floating"
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+                          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)' }}>저장된 대본</span>
+                          <button className="floating-close" onClick={() => setShowScriptsPanel(false)}>✕</button>
+                        </div>
+
+                        {/* 제목 입력 */}
+                        <div style={{ display: 'flex', gap: '0.3rem', marginBottom: '0.5rem' }}>
+                          <input
+                            ref={scriptTitleRef}
+                            defaultValue=""
+                            placeholder="대본 제목..."
+                            style={{
+                              flex: 1, background: 'var(--surface-1)', border: '1px solid var(--border-strong)',
+                              borderRadius: 'var(--radius-sm)', padding: '0.3rem 0.5rem', fontSize: '0.72rem',
+                              color: 'var(--text-primary)', outline: 'none',
+                            }}
+                          />
+                          <button className="btn-icon" onClick={handleSaveScript} disabled={segments.length === 0}
+                            style={{ fontSize: '0.65rem', padding: '0.25rem 0.5rem' }}>
+                            {activeScriptId ? '덮어쓰기' : '새로 저장'}
+                          </button>
+                        </div>
+
+                        {/* 목록 */}
+                        <div style={{ maxHeight: 280, overflowY: 'auto' }}>
+                          {savedScriptsRef.current.length === 0 ? (
+                            <p style={{ fontSize: '0.72rem', color: 'var(--text-muted)', padding: '0.5rem 0' }}>저장된 대본이 없습니다.</p>
+                          ) : (
+                            savedScriptsRef.current
+                              .filter(s => !videoId || s.videoId === videoId)
+                              .map(s => (
+                                <div key={s.id} className={`script-item${activeScriptId === s.id ? ' active' : ''}`}>
+                                  <div style={{ flex: 1, minWidth: 0 }} onClick={() => handleLoadScript(s)}>
+                                    <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</div>
+                                    <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>
+                                      {s.segments.length}개 세그먼트 · {new Date(s.updatedAt).toLocaleDateString('ko')}
+                                    </div>
+                                  </div>
+                                  <button className="floating-close" onClick={() => handleDeleteScript(s.id)} title="삭제">✕</button>
+                                </div>
+                              ))
+                          )}
+                          {videoId && savedScriptsRef.current.some(s => s.videoId !== videoId) && (
+                            <details style={{ marginTop: '0.4rem' }}>
+                              <summary style={{ fontSize: '0.65rem', color: 'var(--text-muted)', cursor: 'pointer' }}>다른 영상 대본 ({savedScriptsRef.current.filter(s => s.videoId !== videoId).length})</summary>
+                              {savedScriptsRef.current.filter(s => s.videoId !== videoId).map(s => (
+                                <div key={s.id} className="script-item" style={{ opacity: 0.7 }}>
+                                  <div style={{ flex: 1, minWidth: 0 }} onClick={() => handleLoadScript(s)}>
+                                    <div style={{ fontSize: '0.72rem', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</div>
+                                    <div style={{ fontSize: '0.62rem', color: 'var(--text-muted)' }}>{s.videoId}</div>
+                                  </div>
+                                  <button className="floating-close" onClick={() => handleDeleteScript(s.id)}>✕</button>
+                                </div>
+                              ))}
+                            </details>
+                          )}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+                <div className="divider-v" />
                 {/* ── 검색 영역 ── */}
                 <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
                   <div className="search-field-inline">
@@ -2027,7 +2235,7 @@ function App() {
 
               {/* 자막 — 세그먼트별 렌더링 (하이라이트 + 재생 위치 추적) */}
               <div 
-                className={`transcript-scroll${isDragMode ? ' drag-mode' : ''}${isSeekMode ? ' seek-mode' : ''}${loopMode ? ' loop-mode' : ''}${showTranslation ? ' show-translation' : ''}`}
+                className={`transcript-scroll${isDragMode ? ' drag-mode' : ''}${isSeekMode ? ' seek-mode' : ''}${loopMode ? ' loop-mode' : ''}${showTranslation ? ' show-translation' : ''}${isEditMode ? ' edit-mode' : ''}`}
                 onMouseUp={handleDragEnd}
                 onMouseLeave={handleDragEnd}
               >

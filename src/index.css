@@ -553,6 +553,32 @@ h1, h2, h3, h4 {
   flex: 1;
 }
 
+/* 대본 관리 패널 */
+.scripts-floating {
+  min-width: 300px;
+  max-width: 400px;
+}
+
+.script-item {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.12s;
+  border-left: 2px solid transparent;
+}
+
+.script-item:hover {
+  background: var(--surface-1);
+}
+
+.script-item.active {
+  background: rgba(99, 102, 241, 0.08);
+  border-left-color: var(--brand);
+}
+
 .action-bar-title {
   font-size: 0.8125rem;
   font-weight: 600;
@@ -1746,6 +1772,53 @@ h1, h2, h3, h4 {
   color: var(--text-secondary);
   line-height: 1.65;
   word-break: break-word;
+}
+
+/* 세그먼트 편집 모드 */
+input.seg-edit-time {
+  width: 60px;
+  text-align: center;
+  outline: none;
+  color: var(--brand-light);
+  cursor: text;
+}
+
+input.seg-edit-time:focus {
+  border-color: var(--brand);
+  background: rgba(99, 102, 241, 0.2);
+}
+
+input.seg-edit-text {
+  flex: 1;
+  min-width: 0;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.2rem 0.4rem;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+input.seg-edit-text:focus {
+  border-color: var(--brand);
+}
+
+/* 편집 모드 표시/숨김 제어 */
+.seg-edit-time,
+.seg-edit-text {
+  display: none;
+}
+
+.edit-mode .seg-edit-time,
+.edit-mode .seg-edit-text {
+  display: inline-flex;
+}
+
+.edit-mode .seg-time-display,
+.edit-mode .seg-text-display {
+  display: none;
 }
 
 /* ─── Search keyword highlight ───────────────────────────── */

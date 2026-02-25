@@ -1766,6 +1766,13 @@ h1, h2, h3, h4 {
   color: var(--text-secondary);
 }
 
+.multi-range-repeat {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  flex-shrink: 0;
+}
+
 .multi-range-del {
   background: none;
   border: none;

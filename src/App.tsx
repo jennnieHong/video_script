@@ -382,7 +382,7 @@ function App() {
   const [langError, setLangError] = useState('');                         // 언어 조회 실패 메시지
   const [isDragMode, setIsDragMode] = useState(false);                 // 드래그 선택 모드 활성화 여부
   const [isMultiRangeMode, setIsMultiRangeMode] = useState(false);     // 다중 구간 모드 (드래그할 때마다 구간 추가)
-  const [multiRanges, setMultiRanges] = useState<{startIdx: number; endIdx: number}[]>([]); // 지정된 구간 목록
+  const [multiRanges, setMultiRanges] = useState<{startIdx: number; endIdx: number; repeatCount: number}[]>([]);
   const [rangeGap, setRangeGap] = useState(1);                         // 구간 사이 간격 (초)
   const [activeMultiRangeIdx, setActiveMultiRangeIdx] = useState(0);   // 현재 재생 중인 구간 번호
   const [dragStartIdx, setDragStartIdx] = useState<number | null>(null); // 드래그 시작 세그먼트 인덱스
@@ -832,7 +832,7 @@ function App() {
       const isDup = multiRanges.some(r => r.startIdx === rangeStart && r.endIdx === rangeEnd);
       if (!isDup) {
         const isFirst = multiRanges.length === 0;
-        setMultiRanges(prev => [...prev, { startIdx: rangeStart, endIdx: rangeEnd }]);
+        setMultiRanges(prev => [...prev, { startIdx: rangeStart, endIdx: rangeEnd, repeatCount: 1 }]);
         if (isFirst) {
           setLoopConfig({ matchIndex: rangeStart, startOffset: 0, endOffset: rangeEnd - rangeStart });
           setInteractionMode('play');
@@ -908,8 +908,8 @@ function App() {
   // ─── 다중 구간 순차 재생 ──────────────────────────────────────
   // gapTimerRef / isInGapRef: 구간 간격 대기 상태 관리
   const isInGapRef  = useRef(false);
-  // activeMultiRangeIdxRef: interval 콜백이 항상 최신 인덱스를 즉시 읽도록
   const activeMultiRangeIdxRef = useRef(0);
+  const rangePlayCountRef = useRef(0); // 현재 구간 재생 횟수 카운터
   useEffect(() => { activeMultiRangeIdxRef.current = activeMultiRangeIdx; }, [activeMultiRangeIdx]);
 
   useEffect(() => {
@@ -936,9 +936,36 @@ function App() {
       if (!rangeEnded) return;
 
       isInGapRef.current = true;
-      if (state !== 0) player.pauseVideo(); // 아직 재생 중이면 정지
+      if (state !== 0) player.pauseVideo();
 
-      const nextIdx   = (curIdx + 1) % multiRanges.length;
+      // 현재 구간 반복 횟수 체크
+      rangePlayCountRef.current += 1;
+      const targetRepeat = cur.repeatCount ?? 1;
+
+      if (rangePlayCountRef.current < targetRepeat) {
+        // 아직 반복 남음: 같은 구간 다시 재생
+        const curStart = segments[cur.startIdx]?.start ?? 0;
+        setTimeout(() => {
+          if (cancelled) return;
+          player.seekTo(curStart, true);
+          player.playVideo();
+          isInGapRef.current = false;
+        }, rangeGap * 1000);
+        return;
+      }
+
+      // 반복 완료: 다음 구간으로
+      rangePlayCountRef.current = 0;
+
+      // repeatCount가 0인 구간 스킵
+      let nextIdx = (curIdx + 1) % multiRanges.length;
+      let safeCount = 0;
+      while ((multiRanges[nextIdx]?.repeatCount ?? 1) === 0 && safeCount < multiRanges.length) {
+        nextIdx = (nextIdx + 1) % multiRanges.length;
+        safeCount++;
+      }
+      if (safeCount >= multiRanges.length) { isInGapRef.current = false; return; } // 모두 0이면 정지
+
       const next      = multiRanges[nextIdx];
       const nextStart = segments[next.startIdx]?.start ?? 0;
 
@@ -1568,7 +1595,7 @@ function App() {
                     // ON: 현재 재생 중인 구간을 첫 항목으로 자동 추가
                     const s = Math.max(0, loopConfig.matchIndex - loopConfig.startOffset);
                     const e = Math.min(segments.length - 1, loopConfig.matchIndex + loopConfig.endOffset);
-                    setMultiRanges([{ startIdx: s, endIdx: e }]);
+                    setMultiRanges([{ startIdx: s, endIdx: e, repeatCount: 1 }]);
                   } else {
                     // OFF: 초기화
                     setMultiRanges([]);
@@ -1632,6 +1659,13 @@ function App() {
                                 <span className="multi-range-num">{ri + 1}</span>
                                 <span className="multi-range-time">
                                   {formatTimestamp(sSeg.start)} ~ {formatTimestamp(eSeg.start + eSeg.duration)}
+                                </span>
+                                <span className="multi-range-repeat">
+                                  <button className="sync-btn" style={{ width: 18, height: 18, fontSize: '0.65rem' }}
+                                    onClick={() => setMultiRanges(prev => prev.map((rr, ii) => ii === ri ? { ...rr, repeatCount: Math.max(0, (rr.repeatCount ?? 1) - 1) } : rr))}>−</button>
+                                  <span style={{ fontFamily: 'monospace', fontSize: '0.72rem', minWidth: '1.2rem', textAlign: 'center' }}>{r.repeatCount ?? 1}</span>
+                                  <button className="sync-btn" style={{ width: 18, height: 18, fontSize: '0.65rem' }}
+                                    onClick={() => setMultiRanges(prev => prev.map((rr, ii) => ii === ri ? { ...rr, repeatCount: (rr.repeatCount ?? 1) + 1 } : rr))}>+</button>
                                 </span>
                                 <button className="multi-range-del" title="삭제"
                                   onClick={() => { setMultiRanges(prev => prev.filter((_, i) => i !== ri)); setActiveMultiRangeIdx(0); }}>✕</button>

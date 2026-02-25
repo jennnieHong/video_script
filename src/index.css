@@ -152,6 +152,11 @@ h1, h2, h3, h4 {
   overflow: hidden;           /* 그리드 자체는 스크롤 안 함 */
 }
 
+/* 3단 레이아웃: 클립 패널이 있을 때 */
+.main-content.has-clip-panel {
+  grid-template-columns: 400px 1fr 300px;
+}
+
 /* Left panel — input & controls */
 .left-panel {
   border-right: 1px solid var(--border);
@@ -171,6 +176,35 @@ h1, h2, h3, h4 {
   overflow: hidden;     /* 자식 transcript-scroll 만 스크롤되도록 잠금 */
   height: 100%;
   background: var(--bg);
+}
+
+/* Clip panel — 구간 조정 + 클립 다운로드 */
+.clip-panel {
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  height: 100%;
+  background: var(--surface-0);
+  padding: 1.25rem 1rem;
+  gap: 1rem;
+}
+
+.clip-panel-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  text-align: center;
+  padding: 2rem 1rem;
+}
+
+.clip-panel-empty svg {
+  opacity: 0.3;
 }
 
 /* Single-column hero (before results) */
@@ -1063,9 +1097,10 @@ h1, h2, h3, h4 {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 1rem;
+  gap: 0.5rem;
 }
 
 .sync-info {
@@ -1101,7 +1136,7 @@ h1, h2, h3, h4 {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  flex: 1;
+  flex: 1 0 auto;
   justify-content: flex-end;
 }
 
@@ -1686,8 +1721,11 @@ h1, h2, h3, h4 {
 .multi-range-gap-row {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
-  padding-top: 0.25rem;
-  border-top: 1px solid var(--border);
-  flex-wrap: nowrap;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem;
+  margin-top: 0.5rem;
+  background: var(--surface-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  flex-wrap: wrap;
 }

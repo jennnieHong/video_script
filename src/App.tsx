@@ -1168,7 +1168,7 @@ function App() {
       </nav>
 
       {/* ── Main Layout ──────────────────────────────────────── */}
-      <div className={`main-content${hasResult ? '' : ' hero-layout'}`}>
+      <div className={`main-content${hasResult ? '' : ' hero-layout'}${hasResult && loopMode && loopConfig && loopSegment ? ' has-clip-panel' : ''}`}>
 
         {/* ══ 좌측 패널: 입력 & 컨트롤 ══════════════════════════ */}
         <aside className="left-panel">
@@ -1611,6 +1611,63 @@ function App() {
               </AnimatePresence>
             </motion.div>
           )}
+
+          {/* 재생 컨트롤 (결과 있을 때만) */}
+          {hasResult && (
+            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="controls-block">
+              <p className="section-label">
+                <svg style={{ width: 11, height: 11 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                재생 컨트롤
+              </p>
+              <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => { const next = !isSeekMode; setIsSeekMode(next); if (next) setLoopConfig(null); }}>
+                <div className="mode-toggle-info">
+                  <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg></span>
+                  <div className="mode-toggle-texts"><span className="mode-toggle-title">지점 재생</span><span className="mode-toggle-desc">해당 위치부터 재생</span></div>
+                </div>
+                <div className="toggle">
+                  <input type="checkbox" checked={isSeekMode} onChange={(e) => { e.stopPropagation(); const next = e.target.checked; setIsSeekMode(next); if (next) setLoopConfig(null); }} />
+                  <div className="toggle-track" /><div className="toggle-thumb" />
+                </div>
+              </div>
+              <div className={`mode-toggle-bar ${isDragMode ? 'active' : ''}`} onClick={() => setIsDragMode(v => !v)}>
+                <div className="mode-toggle-info">
+                  <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-2 2-2-2"/><path d="M15 6l-2-2-2 2"/><path d="M18 15l2-2-2-2"/><path d="M6 15l-2-2 2-2"/></svg></span>
+                  <div className="mode-toggle-texts"><span className="mode-toggle-title">드래그 영역 재생</span><span className="mode-toggle-desc">구간 직접 지정</span></div>
+                </div>
+                <div className="toggle">
+                  <input type="checkbox" checked={isDragMode} onChange={(e) => { e.stopPropagation(); setIsDragMode(e.target.checked); }} />
+                  <div className="toggle-track" /><div className="toggle-thumb" />
+                </div>
+              </div>
+              <div className={`mode-toggle-bar ${isTrackingMode ? 'active' : ''}`} onClick={() => setIsTrackingMode(v => !v)}>
+                <div className="mode-toggle-info">
+                  <span className="mode-toggle-icon"><Clock style={{ width: 14, height: 14 }} /></span>
+                  <div className="mode-toggle-texts"><span className="mode-toggle-title">위치 트래킹</span><span className="mode-toggle-desc">재생 시 자동 스크롤</span></div>
+                </div>
+                <div className="toggle">
+                  <input type="checkbox" checked={isTrackingMode} onChange={(e) => { e.stopPropagation(); setIsTrackingMode(e.target.checked); }} />
+                  <div className="toggle-track" /><div className="toggle-thumb" />
+                </div>
+              </div>
+              <AnimatePresence>
+                {isTrackingMode && (
+                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden' }} className="sync-adjust-bar">
+                    <div className="sync-info">
+                      <RotateCcw style={{ width: 12, height: 12, color: 'var(--brand-light)' }} />
+                      <span className="sync-label">싱크 조정</span>
+                      <span className="sync-value">{trackingOffset > 0 ? `+${trackingOffset.toFixed(1)}s` : `${trackingOffset.toFixed(1)}s`}<span className="sync-hint">({trackingOffset > 0 ? '빨리' : '느리게'})</span></span>
+                    </div>
+                    <div className="sync-controls">
+                      <button className="sync-btn" onClick={() => setTrackingOffset(prev => prev - 0.1)}>-</button>
+                      <input type="range" min="-3" max="3" step="0.1" value={trackingOffset} onChange={(e) => setTrackingOffset(parseFloat(e.target.value))} className="sync-slider" />
+                      <button className="sync-btn" onClick={() => setTrackingOffset(prev => prev + 0.1)}>+</button>
+                      <button className="sync-reset" onClick={() => setTrackingOffset(0.3)}>초기화</button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </motion.div>
+          )}
         </aside>
 
         {/* ══ 우측 패널: 결과 ════════════════════════════════════ */}
@@ -1674,257 +1731,8 @@ function App() {
                     />
                   </div>
                 )}
-                
-                <AnimatePresence>
-                  {loopMode && loopConfig && loopSegment && (
-                    <motion.div 
-                      key="loop-controls"
-                      initial={{ opacity: 0, height: 0 }}
-                      animate={{ opacity: 1, height: 'auto' }}
-                      exit={{ opacity: 0, height: 0 }}
-                      style={{ overflow: 'hidden' }}
-                      className="loop-controls-panel"
-                    >
-                      <div className="loop-controls">
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
-                          <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--brand-light)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                            구간 실시간 조정
-                          </span>
-                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
-                            {formatTimestamp(loopSegment.start)} ~ {formatTimestamp(loopSegment.end)}
-                            &nbsp;({Math.floor(loopSegment.end - loopSegment.start)}s)
-                          </span>
-                        </div>
-                        <div className="loop-ctrl-row" style={{ marginBottom: '0.375rem' }}>
-                          <span className="loop-ctrl-label">시작</span>
-                          <button className="btn-loop-step"
-                            onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.min(c.startOffset + 1, c.matchIndex) } : null)}
-                            disabled={loopSegment.startSegIdx === 0}
-                          >◀</button>
-                          <div className="loop-ctrl-preview">
-                            <span className="loop-ctrl-time">{formatTimestamp(loopSegment.startSeg.start)}</span>
-                            <span className="loop-ctrl-text">{loopSegment.startSeg.text.trim()}</span>
-                          </div>
-                          <button className="btn-loop-step"
-                            onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.max(0, c.startOffset - 1) } : null)}
-                            disabled={loopConfig.startOffset === 0}
-                          >▶</button>
-                        </div>
-                        <div className="loop-ctrl-row">
-                          <span className="loop-ctrl-label">종료</span>
-                          <button className="btn-loop-step"
-                            onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.max(0, c.endOffset - 1) } : null)}
-                            disabled={loopConfig.endOffset === 0}
-                          >◀</button>
-                          <div className="loop-ctrl-preview">
-                            <span className="loop-ctrl-time">{formatTimestamp(loopSegment.endSeg.start + loopSegment.endSeg.duration)}</span>
-                            <span className="loop-ctrl-text">{loopSegment.endSeg.text.trim()}</span>
-                          </div>
-                          <button className="btn-loop-step"
-                            onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.min(c.endOffset + 1, segments.length - 1 - c.matchIndex) } : null)}
-                            disabled={loopSegment.endSegIdx >= segments.length - 1}
-                          >▶</button>
-                        </div>
-
-                        {/* ── 클립 다운로드 패널 ──────────────────────────── */}
-                        <div style={{ marginTop: '0.5rem', borderTop: '1px solid var(--border)', paddingTop: '0.5rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-
-                          {/* Row 1: 해상도 + 자막굽기 토글 */}
-                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                            <select
-                              value={clipQuality}
-                              onChange={(e) => setClipQuality(e.target.value as typeof clipQuality)}
-                              style={{ fontSize: '0.72rem', padding: '0.2rem 0.4rem', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-primary)', cursor: 'pointer' }}
-                              title="다운로드 해상도 선택"
-                            >
-                              <option value="360">360p</option>
-                              <option value="480">480p</option>
-                              <option value="720">720p</option>
-                              <option value="1080">1080p</option>
-                              <option value="best">최고화질</option>
-                              <option value="vertical">📱 세로(쇼츠/릴스)</option>
-                            </select>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: '0.3rem', fontSize: '0.72rem', color: 'var(--text-secondary)', cursor: 'pointer', userSelect: 'none' }}>
-                              <input
-                                type="checkbox"
-                                checked={burnSubs}
-                                onChange={(e) => setBurnSubs(e.target.checked)}
-                                style={{ accentColor: 'var(--accent)', width: 13, height: 13 }}
-                              />
-                              🔥 자막 굽기
-                            </label>
-                          </div>
-
-                          {/* Row 2: 자막 스타일 설정 패널 */}
-                          {burnSubs && (
-                            <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, padding: '0.5rem 0.6rem', display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-                              <div style={{ fontSize: '0.68rem', color: 'var(--text-tertiary)', fontWeight: 600, letterSpacing: '0.05em' }}>자막 스타일</div>
-
-                              {/* 폰트 크기 + 위치 */}
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap' }}>
-                                <label style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                                  크기
-                                  <input
-                                    type="range" min={16} max={48} step={2}
-                                    value={subStyle.fontSize}
-                                    onChange={(e) => setSubStyle(s => ({ ...s, fontSize: Number(e.target.value) }))}
-                                    style={{ width: 70, accentColor: 'var(--accent)' }}
-                                  />
-                                  <span style={{ fontSize: '0.68rem', minWidth: 24 }}>{subStyle.fontSize}</span>
-                                </label>
-                                <label style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
-                                  위치
-                                  <select
-                                    value={subStyle.position}
-                                    onChange={(e) => setSubStyle(s => ({ ...s, position: e.target.value as typeof s.position }))}
-                                    style={{ fontSize: '0.7rem', padding: '0.1rem 0.3rem', background: 'var(--surface-3)', border: '1px solid var(--border)', borderRadius: 3, color: 'var(--text-primary)' }}
-                                  >
-                                    <option value="top">상단</option>
-                                    <option value="middle">중앙</option>
-                                    <option value="bottom">하단</option>
-                                  </select>
-                                </label>
-                              </div>
-
-                              {/* 색상 + 옵션 */}
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
-                                <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>색상</span>
-                                {(['white', 'yellow', 'black'] as const).map(c => (
-                                  <button key={c} onClick={() => setSubStyle(s => ({ ...s, color: c }))}
-                                    style={{
-                                      width: 20, height: 20, borderRadius: '50%', border: `2px solid ${subStyle.color === c ? 'var(--accent)' : 'var(--border)'}`,
-                                      background: c === 'white' ? '#fff' : c === 'yellow' ? '#ffff00' : '#111',
-                                      cursor: 'pointer', flexShrink: 0,
-                                    }}
-                                    title={c === 'white' ? '흰색' : c === 'yellow' ? '노란색' : '검정'}
-                                  />
-                                ))}
-                                <div style={{ width: 1, height: 14, background: 'var(--border)' }} />
-                                <label style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem', cursor: 'pointer' }}>
-                                  <input type="checkbox" checked={subStyle.bold} onChange={(e) => setSubStyle(s => ({ ...s, bold: e.target.checked }))} style={{ accentColor: 'var(--accent)', width: 12, height: 12 }} />
-                                  굵게
-                                </label>
-                                <label style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem', cursor: 'pointer' }}>
-                                  <input type="checkbox" checked={subStyle.background} onChange={(e) => setSubStyle(s => ({ ...s, background: e.target.checked }))} style={{ accentColor: 'var(--accent)', width: 12, height: 12 }} />
-                                  배경박스
-                                </label>
-                              </div>
-                            </div>
-                          )}
-
-                          {/* Row 3: 다운로드 버튼들 */}
-                          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.4rem' }}>
-                            {/* 일반 클립 다운로드 */}
-                            <button
-                              className="btn-icon"
-                              style={{ fontSize: '0.72rem', gap: '0.3rem' }}
-                              title={`${formatTimestamp(loopSegment.start)} ~ ${formatTimestamp(loopSegment.end)} 구간 MP4 다운로드`}
-                              onClick={async () => {
-                                const filename = `clip_${videoId}_${Math.floor(loopSegment.start)}s-${Math.floor(loopSegment.end)}s.mp4`;
-                                const clipBody = {
-                                  url: `https://www.youtube.com/watch?v=${videoId}`,
-                                  start: loopSegment.start,
-                                  end: loopSegment.end,
-                                  quality: clipQuality,
-                                };
-                                const clipUrl = `http://localhost:8000/clip`;
-                                // showSaveFilePicker: 버튼 클릭 시점(사용자 제스처) 안에서 즉시 호출
-                                // → 이후 fetch가 얼마나 걸려도 파일 쓰기 허용됨
-                                if ('showSaveFilePicker' in window) {
-                                  try {
-                                    const fh = await (window as any).showSaveFilePicker({ suggestedName: filename, types: [{ description: 'MP4', accept: { 'video/mp4': ['.mp4'] } }] });
-                                    alert('클립을 준비 중입니다. 완료되면 자동으로 저장됩니다 (수십 초 소요).');
-                                    const res = await fetch(clipUrl, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify(clipBody),
-                                    });
-                                    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
-                                    const w = await fh.createWritable();
-                                    await res.body!.pipeTo(w);
-                                    alert('클립 저장 완료!');
-                                  } catch (e: any) { if (e?.name !== 'AbortError') alert(`클립 다운로드 실패: ${e.message}`); }
-                                } else {
-                                  // showSaveFilePicker 미지원 환경: blob으로 받아서 a태그 클릭
-                                  try {
-                                    alert('클립을 준비 중입니다. 완료되면 자동으로 저장됩니다 (수십 초 소요).');
-                                    const res = await fetch(clipUrl, {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify(clipBody),
-                                    });
-                                    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
-                                    const blob = await res.blob();
-                                    const a = document.createElement('a');
-                                    a.href = URL.createObjectURL(blob);
-                                    a.download = filename;
-                                    a.click();
-                                    setTimeout(() => URL.revokeObjectURL(a.href), 100);
-                                  } catch (e: any) { alert(`클립 다운로드 실패: ${(e as any).message}`); }
-                                }
-                              }}
-                            >
-                              <Download style={{ width: 12, height: 12 }} />
-                              클립 ({formatTimestamp(loopSegment.start)}~{formatTimestamp(loopSegment.end)})
-                            </button>
-
-                            {/* 자막 굽기 다운로드 */}
-                            {burnSubs && (
-                              <button
-                                className="btn-icon"
-                                style={{ fontSize: '0.72rem', gap: '0.3rem', background: 'rgba(239,68,68,0.12)', borderColor: 'rgba(239,68,68,0.4)', color: 'var(--text-primary)' }}
-                                title="자막을 영상에 직접 구워서 저장"
-                                onClick={async () => {
-                                  // 선택된 구간의 세그먼트 → 클립 상대 시간으로 변환
-                                  const subSegs = [];
-                                  for (let si = loopSegment.startSegIdx; si <= loopSegment.endSegIdx; si++) {
-                                    const seg = segments[si];
-                                    const text = translations[si] || seg.text;
-                                    if (text.trim()) {
-                                      subSegs.push({
-                                        start: Math.max(0, seg.start - loopSegment.start),
-                                        end: Math.max(0, (seg.start + seg.duration) - loopSegment.start),
-                                        text: text.trim(),
-                                      });
-                                    }
-                                  }
-                                  if (subSegs.length === 0) { alert('자막 데이터가 없습니다. 발음 탭에서 자막을 입력하거나 자동변환을 실행하세요.'); return; }
-
-                                  const filename = `burned_${videoId}_${Math.floor(loopSegment.start)}s-${Math.floor(loopSegment.end)}s.mp4`;
-                                  if ('showSaveFilePicker' in window) {
-                                    try {
-                                      const fh = await (window as any).showSaveFilePicker({ suggestedName: filename, types: [{ description: 'MP4', accept: { 'video/mp4': ['.mp4'] } }] });
-                                      alert('자막을 굽고 있습니다. 완료되면 자동으로 저장됩니다 (수십 초~수분 소요).');
-                                      const res = await fetch('http://localhost:8000/clip-burn', {
-                                        method: 'POST',
-                                        headers: { 'Content-Type': 'application/json' },
-                                        body: JSON.stringify({
-                                          url: `https://www.youtube.com/watch?v=${videoId}`,
-                                          start: loopSegment.start,
-                                          end: loopSegment.end,
-                                          quality: clipQuality,
-                                          subtitle_segments: subSegs,
-                                          style: subStyle,
-                                        }),
-                                      });
-                                      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
-                                      const w = await fh.createWritable();
-                                      await res.body!.pipeTo(w);
-                                      alert('자막 굽기 완료!');
-                                    } catch (e: any) { if (e?.name !== 'AbortError') alert(`자막 굽기 실패: ${e.message}`); }
-                                  } else { alert('이 브라우저는 파일 저장 대화상자를 지원하지 않습니다.'); }
-                                }}
-                              >
-                                🔥 자막 굽기
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
               </div>
+
 
               {/* 액션 바 */}
               <div className="action-bar">
@@ -2155,114 +1963,176 @@ function App() {
                 {renderedSegments}
               </div>
 
-              {/* 대본 하단 설정 바 */}
-              <div className="transcript-footer">
-                <div className="footer-controls">
-                  {/* 선택지점부터 재생 모드 */}
-                  <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => { const next = !isSeekMode; setIsSeekMode(next); if (next) setLoopConfig(null); }}>
-                    <div className="mode-toggle-info">
-                      <span className="mode-toggle-icon">
-                        <svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                      </span>
-                      <div className="mode-toggle-texts">
-                        <span className="mode-toggle-title">지점 재생</span>
-                        <span className="mode-toggle-desc">해당 위치부터 재생</span>
-                      </div>
-                    </div>
-                    <div className="toggle">
-                      <input
-                        type="checkbox"
-                        checked={isSeekMode}
-                        onChange={(e) => { e.stopPropagation(); const next = e.target.checked; setIsSeekMode(next); if (next) setLoopConfig(null); }}
-                      />
-                      <div className="toggle-track" />
-                      <div className="toggle-thumb" />
-                    </div>
-                  </div>
+            </motion.div>
+          )}
+        </main>
 
-                  {/* 드래그 선택 모드 */}
-                  <div className={`mode-toggle-bar ${isDragMode ? 'active' : ''}`} onClick={() => setIsDragMode(v => !v)}>
-                    <div className="mode-toggle-info">
-                      <span className="mode-toggle-icon">
-                        <svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-2 2-2-2"/><path d="M15 6l-2-2-2 2"/><path d="M18 15l2-2-2-2"/><path d="M6 15l-2-2 2-2"/></svg>
-                      </span>
-                      <div className="mode-toggle-texts">
-                        <span className="mode-toggle-title">드래그 영역 재생</span>
-                        <span className="mode-toggle-desc">구간 직접 지정</span>
-                      </div>
-                    </div>
-                    <div className="toggle">
-                      <input
-                        type="checkbox"
-                        checked={isDragMode}
-                        onChange={(e) => { e.stopPropagation(); setIsDragMode(e.target.checked); }}
-                      />
-                      <div className="toggle-track" />
-                      <div className="toggle-thumb" />
-                    </div>
-                  </div>
 
-                  {/* 재생 위치 트래킹 */}
-                  <div className={`mode-toggle-bar ${isTrackingMode ? 'active' : ''}`} onClick={() => setIsTrackingMode(v => !v)}>
-                    <div className="mode-toggle-info">
-                      <span className="mode-toggle-icon">
-                        <Clock style={{ width: 14, height: 14 }} />
-                      </span>
-                      <div className="mode-toggle-texts">
-                        <span className="mode-toggle-title">위치 트래킹</span>
-                        <span className="mode-toggle-desc">재생 시 자동 스크롤</span>
-                      </div>
+        {/* ══ 3번째 패널: 클립 다운로드 ══════════════════════════ */}
+        {hasResult && (
+          <aside className="clip-panel">
+            <p className="section-label" style={{ marginBottom: '0.25rem', flexShrink: 0 }}>
+              <Download style={{ width: 11, height: 11 }} />
+              클립 다운로드
+            </p>
+
+            {!(loopMode && loopConfig && loopSegment) ? (
+              <div className="clip-panel-empty">
+                <svg style={{ width: 32, height: 32 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                <span>검색 결과에서 ▶ 버튼을 눌러<br/>구간을 선택하면<br/>여기서 클립을 다운로드할 수 있어요</span>
+              </div>
+            ) : (
+              <>
+                {/* 구간 표시 */}
+                <div style={{ background: 'var(--surface-1)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.5rem 0.75rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+                  <span style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--brand-light)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>선택 구간</span>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontFamily: 'monospace' }}>
+                    {formatTimestamp(loopSegment.start)} ~ {formatTimestamp(loopSegment.end)}
+                    <span style={{ marginLeft: '0.35rem', opacity: 0.7 }}>({Math.floor(loopSegment.end - loopSegment.start)}s)</span>
+                  </span>
+                </div>
+
+                {/* 구간 실시간 조정 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', flexShrink: 0 }}>
+                  <p className="section-label" style={{ fontSize: '0.63rem' }}>구간 조정</p>
+                  <div className="loop-ctrl-row">
+                    <span className="loop-ctrl-label">시작</span>
+                    <button className="btn-loop-step" onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.min(c.startOffset + 1, c.matchIndex) } : null)} disabled={loopSegment.startSegIdx === 0}>◀</button>
+                    <div className="loop-ctrl-preview">
+                      <span className="loop-ctrl-time">{formatTimestamp(loopSegment.startSeg.start)}</span>
+                      <span className="loop-ctrl-text">{loopSegment.startSeg.text.trim()}</span>
                     </div>
-                    <div className="toggle">
-                      <input
-                        type="checkbox"
-                        checked={isTrackingMode}
-                        onChange={(e) => { e.stopPropagation(); setIsTrackingMode(e.target.checked); }}
-                      />
-                      <div className="toggle-track" />
-                      <div className="toggle-thumb" />
+                    <button className="btn-loop-step" onClick={() => setLoopConfig(c => c ? { ...c, startOffset: Math.max(0, c.startOffset - 1) } : null)} disabled={!loopConfig || loopConfig.startOffset === 0}>▶</button>
+                  </div>
+                  <div className="loop-ctrl-row">
+                    <span className="loop-ctrl-label">종료</span>
+                    <button className="btn-loop-step" onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.max(0, c.endOffset - 1) } : null)} disabled={!loopConfig || loopConfig.endOffset === 0}>◀</button>
+                    <div className="loop-ctrl-preview">
+                      <span className="loop-ctrl-time">{formatTimestamp(loopSegment.endSeg.start + loopSegment.endSeg.duration)}</span>
+                      <span className="loop-ctrl-text">{loopSegment.endSeg.text.trim()}</span>
                     </div>
+                    <button className="btn-loop-step" onClick={() => setLoopConfig(c => c ? { ...c, endOffset: Math.min(c.endOffset + 1, segments.length - 1 - c.matchIndex) } : null)} disabled={loopSegment.endSegIdx >= segments.length - 1}>▶</button>
                   </div>
                 </div>
 
-                {/* 싱크 미세 조정 (트래킹 모드 시에만 표시) */}
+                {/* 다운로드 설정 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', borderTop: '1px solid var(--border)', paddingTop: '0.75rem', flexShrink: 0 }}>
+                  <p className="section-label" style={{ fontSize: '0.63rem' }}>다운로드 설정</p>
+                  <select value={clipQuality} onChange={(e) => setClipQuality(e.target.value as typeof clipQuality)}
+                    style={{ fontSize: '0.78rem', padding: '0.4rem 0.5rem', background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text-primary)', cursor: 'pointer', width: '100%' }}>
+                    <option value="360">360p</option>
+                    <option value="480">480p</option>
+                    <option value="720">720p (권장)</option>
+                    <option value="1080">1080p</option>
+                    <option value="best">최고화질</option>
+                    <option value="vertical">📱 세로 (쇼츠/릴스)</option>
+                  </select>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: 'var(--text-secondary)', cursor: 'pointer', padding: '0.2rem 0' }}>
+                    <input type="checkbox" checked={burnSubs} onChange={(e) => setBurnSubs(e.target.checked)} style={{ accentColor: 'var(--accent)', width: 14, height: 14 }} />
+                    🔥 자막 굽기
+                  </label>
+                </div>
+
+                {/* 자막 스타일 (burnSubs ON일 때만) */}
                 <AnimatePresence>
-                  {isTrackingMode && (
-                    <motion.div 
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: 10 }}
-                      className="sync-adjust-bar"
-                    >
-                      <div className="sync-info">
-                        <RotateCcw style={{ width: 12, height: 12, color: 'var(--brand-light)' }} />
-                        <span className="sync-label">싱크 조정</span>
-                        <span className="sync-value">
-                          {trackingOffset > 0 ? `+${trackingOffset.toFixed(1)}s` : `${trackingOffset.toFixed(1)}s`}
-                          <span className="sync-hint">({trackingOffset > 0 ? '빨리' : '느리게'})</span>
-                        </span>
-                      </div>
-                      <div className="sync-controls">
-                        <button className="sync-btn" onClick={() => setTrackingOffset(prev => prev - 0.1)} title="0.1초 늦게">-</button>
-                        <input 
-                          type="range" min="-3" max="3" step="0.1" 
-                          value={trackingOffset} 
-                          onChange={(e) => setTrackingOffset(parseFloat(e.target.value))}
-                          className="sync-slider"
-                        />
-                        <button className="sync-btn" onClick={() => setTrackingOffset(prev => prev + 0.1)} title="0.1초 빨리">+</button>
-                        <button className="sync-reset" onClick={() => setTrackingOffset(0.3)}>초기화</button>
+                  {burnSubs && (
+                    <motion.div key="sub-style" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden', flexShrink: 0 }}>
+                      <div style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', borderRadius: 8, padding: '0.65rem 0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                        <p className="section-label" style={{ fontSize: '0.63rem' }}>자막 스타일</p>
+                        <label style={{ fontSize: '0.77rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>크기
+                          <input type="range" min={16} max={48} step={2} value={subStyle.fontSize} onChange={(e) => setSubStyle(s => ({ ...s, fontSize: Number(e.target.value) }))} style={{ flex: 1, accentColor: 'var(--accent)' }} />
+                          <span style={{ fontSize: '0.7rem', minWidth: 22 }}>{subStyle.fontSize}</span>
+                        </label>
+                        <label style={{ fontSize: '0.77rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>위치
+                          <select value={subStyle.position} onChange={(e) => setSubStyle(s => ({ ...s, position: e.target.value as typeof s.position }))} style={{ flex: 1, fontSize: '0.77rem', padding: '0.25rem 0.35rem', background: 'var(--surface-3)', border: '1px solid var(--border)', borderRadius: 4, color: 'var(--text-primary)' }}>
+                            <option value="top">상단</option><option value="middle">중앙</option><option value="bottom">하단</option>
+                          </select>
+                        </label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: '0.77rem', color: 'var(--text-secondary)' }}>색상</span>
+                          {(['white', 'yellow', 'black'] as const).map(c => (
+                            <button key={c} onClick={() => setSubStyle(s => ({ ...s, color: c }))} style={{ width: 20, height: 20, borderRadius: '50%', border: `2px solid ${subStyle.color === c ? 'var(--accent)' : 'var(--border)'}`, background: c === 'white' ? '#fff' : c === 'yellow' ? '#ffff00' : '#111', cursor: 'pointer' }} />
+                          ))}
+                          <label style={{ fontSize: '0.77rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem', cursor: 'pointer', marginLeft: '0.2rem' }}>
+                            <input type="checkbox" checked={subStyle.bold} onChange={(e) => setSubStyle(s => ({ ...s, bold: e.target.checked }))} style={{ accentColor: 'var(--accent)', width: 12, height: 12 }} />굵게
+                          </label>
+                          <label style={{ fontSize: '0.77rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem', cursor: 'pointer' }}>
+                            <input type="checkbox" checked={subStyle.background} onChange={(e) => setSubStyle(s => ({ ...s, background: e.target.checked }))} style={{ accentColor: 'var(--accent)', width: 12, height: 12 }} />배경
+                          </label>
+                        </div>
                       </div>
                     </motion.div>
                   )}
                 </AnimatePresence>
-              </div>
-            </motion.div>
-          )}
-        </main>
+
+                {/* 다운로드 버튼 */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: 'auto', paddingTop: '0.5rem', flexShrink: 0 }}>
+                  <button className="btn-icon" style={{ width: '100%', justifyContent: 'center', gap: '0.4rem', padding: '0.5rem' }}
+                    title={`${formatTimestamp(loopSegment.start)} ~ ${formatTimestamp(loopSegment.end)} MP4 다운로드`}
+                    onClick={async () => {
+                      const filename = `clip_${videoId}_${Math.floor(loopSegment.start)}s-${Math.floor(loopSegment.end)}s.mp4`;
+                      const clipBody = { url: `https://www.youtube.com/watch?v=${videoId}`, start: loopSegment.start, end: loopSegment.end, quality: clipQuality };
+                      if ('showSaveFilePicker' in window) {
+                        try {
+                          const fh = await (window as any).showSaveFilePicker({ suggestedName: filename, types: [{ description: 'MP4', accept: { 'video/mp4': ['.mp4'] } }] });
+                          alert('클립을 준비 중입니다. 완료되면 자동으로 저장됩니다 (수십 초 소요).');
+                          const res = await fetch('http://localhost:8000/clip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clipBody) });
+                          if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
+                          const w = await fh.createWritable(); await res.body!.pipeTo(w); alert('클립 저장 완료!');
+                        } catch (e: any) { if (e?.name !== 'AbortError') alert(`클립 다운로드 실패: ${e.message}`); }
+                      } else {
+                        try {
+                          alert('클립을 준비 중입니다.');
+                          const res = await fetch('http://localhost:8000/clip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clipBody) });
+                          if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
+                          const blob = await res.blob();
+                          const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+                          setTimeout(() => URL.revokeObjectURL(a.href), 100);
+                        } catch (e: any) { alert(`실패: ${(e as any).message}`); }
+                      }
+                    }}>
+                    <Download style={{ width: 13, height: 13 }} />
+                    클립 다운로드
+                  </button>
+
+                  {burnSubs && (
+                    <button className="btn-icon" style={{ width: '100%', justifyContent: 'center', gap: '0.4rem', padding: '0.5rem', background: 'rgba(239,68,68,0.12)', borderColor: 'rgba(239,68,68,0.4)', color: 'var(--text-primary)' }}
+                      title="자막을 영상에 직접 구워서 저장"
+                      onClick={async () => {
+                        const subSegs: { start: number; end: number; text: string }[] = [];
+                        for (let si = loopSegment.startSegIdx; si <= loopSegment.endSegIdx; si++) {
+                          const seg = segments[si]; const text = translations[si] || seg.text;
+                          if (text.trim()) subSegs.push({ start: Math.max(0, seg.start - loopSegment.start), end: Math.max(0, (seg.start + seg.duration) - loopSegment.start), text: text.trim() });
+                        }
+                        if (subSegs.length === 0) { alert('자막 데이터가 없습니다.'); return; }
+                        const filename = `burned_${videoId}_${Math.floor(loopSegment.start)}s-${Math.floor(loopSegment.end)}s.mp4`;
+                        if ('showSaveFilePicker' in window) {
+                          try {
+                            const fh = await (window as any).showSaveFilePicker({ suggestedName: filename, types: [{ description: 'MP4', accept: { 'video/mp4': ['.mp4'] } }] });
+                            alert('자막을 굽고 있습니다 (수십 초~수분 소요).');
+                            const res = await fetch('http://localhost:8000/clip-burn', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url: `https://www.youtube.com/watch?v=${videoId}`, start: loopSegment.start, end: loopSegment.end, quality: clipQuality, subtitle_segments: subSegs, style: subStyle }) });
+                            if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
+                            const w = await fh.createWritable(); await res.body!.pipeTo(w); alert('자막 굽기 완료!');
+                          } catch (e: any) { if (e?.name !== 'AbortError') alert(`자막 굽기 실패: ${e.message}`); }
+                        } else { alert('이 브라우저는 파일 저장 대화상자를 지원하지 않습니다.'); }
+                      }}>
+                      🔥 자막 굽기
+                    </button>
+                  )}
+                </div>
+              </>
+            )}
+          </aside>
+        )}
       </div>
     </div>
   );
 }
-
 export default App;
+
+
+
+
+

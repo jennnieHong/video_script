@@ -1469,7 +1469,18 @@ function App() {
                                     onClick={() => setMultiRanges(prev => prev.map((rr, ii) => ii === ri ? { ...rr, repeatCount: (rr.repeatCount ?? 1) + 1 } : rr))}>+</button>
                                 </span>
                                 <button className="multi-range-del" title="삭제"
-                                  onClick={() => { setMultiRanges(prev => prev.filter((_, i) => i !== ri)); setActiveMultiRangeIdx(0); }}>✕</button>
+                                  onClick={() => {
+                                    const remaining = multiRanges.filter((_, i) => i !== ri);
+                                    setMultiRanges(remaining);
+                                    setActiveMultiRangeIdx(0);
+                                    rangePlayCountRef.current = 0;
+                                    if (remaining.length === 0) {
+                                      setLoopConfig(null);
+                                    } else {
+                                      const first = remaining[0];
+                                      setLoopConfig({ matchIndex: first.startIdx, startOffset: 0, endOffset: first.endIdx - first.startIdx });
+                                    }
+                                  }}>✕</button>
                               </div>
                             );
                           })}
@@ -1487,7 +1498,7 @@ function App() {
                       {multiRanges.length > 0 && (
                         <button
                           style={{ fontSize: '0.7rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '0.1rem 0' }}
-                          onClick={() => { setMultiRanges([]); setActiveMultiRangeIdx(0); }}
+                          onClick={() => { setMultiRanges([]); setActiveMultiRangeIdx(0); rangePlayCountRef.current = 0; setLoopConfig(null); }}
                         >구간 전체 삭제</button>
                       )}
                     </div>

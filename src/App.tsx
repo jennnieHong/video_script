@@ -277,8 +277,10 @@ function App() {
   const [error, setError] = useState('');        // 사용자에게 표시할 에러 메시지
   const [copied, setCopied] = useState(false);   // "복사됨" 피드백 표시 여부 (2초 후 자동 리셋)
 
-  const [searchQuery, setSearchQuery] = useState('');    // 실제 검색 실행시 사용되는 쿼리 (만 루지 Enter/버튼시 업데이트)
-  const [searchInput, setSearchInput] = useState('');     // 검색 입력창 UI 값 (즉각 반영될 도 를지, 리렌더 범위 최소화)
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [showModePanel, setShowModePanel] = useState(false);
+  const [showSearchResults, setShowSearchResults] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]); // 검색 결과 목록
 
   // activeSegIdx: LoopPlayer 재생 중 현재 재생 위치에 해당하는 세그먼트 인덱스
@@ -462,7 +464,7 @@ function App() {
     setTranscript('');
     setSegments([]);
     setSearchQuery('');
-    setSearchInput('');
+    if (searchInputRef.current) searchInputRef.current.value = '';
     setSearchResults([]);
     setLoopConfig(null);  // 새 영상 검색 시 구간반복 플레이어도 닫음
 
@@ -603,8 +605,8 @@ function App() {
    *   - 결과가 없으면 searchResults를 빈 배열로 초기화 (UI에서 "없음" 메시지 표시)
    */
   const handleSearch = (overrideQuery?: string | any) => {
-    const q = typeof overrideQuery === 'string' ? overrideQuery : searchInput;
-    setSearchQuery(q); // 실제 검색 키워드 확정
+    const q = typeof overrideQuery === 'string' ? overrideQuery : (searchInputRef.current?.value ?? '');
+    setSearchQuery(q);
     if (!q || !q.trim() || segments.length === 0) {
       setSearchResults([]);
       return;
@@ -1362,211 +1364,6 @@ function App() {
           </AnimatePresence>
 
 
-          {/* ── 검색 패널 (결과 있을 때만) ── */}
-          {hasResult && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="controls-block search-panel"
-            >
-              <p className="section-label">
-                <Search style={{ width: 11, height: 11 }} />
-                대사 검색
-              </p>
-
-              <div className="search-field">
-                <Search style={{ width: 13, height: 13, color: 'var(--text-muted)', flexShrink: 0 }} />
-                <input
-                  type="text"
-                  placeholder="키워드 검색..."
-                  value={searchInput}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setSearchInput(v);
-                    // 입력이 비어지면 즉시 결과 초기화
-                    if (!v.trim()) {
-                      setSearchQuery('');
-                      setSearchResults([]);
-                    }
-                  }}
-                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                />
-                <button className="btn-search" onClick={() => handleSearch()}>
-                  <Search style={{ width: 11, height: 11 }} /> 검색
-                </button>
-              </div>
-
-              {/* 클릭 동작 설정 (검색 vs 재생) */}
-              <div className="mode-selector-wrap">
-                <div className="mode-tabs">
-                  <button
-                    className={`mode-tab ${interactionMode === 'search' ? 'active' : ''}`}
-                    onClick={() => setInteractionMode('search')}
-                  >
-                    <Search style={{ width: 12, height: 12 }} /> 검색 모드
-                  </button>
-                  <button
-                    className={`mode-tab ${interactionMode === 'play' ? 'active' : ''}`}
-                    onClick={() => setInteractionMode('play')}
-                  >
-                    <Youtube style={{ width: 12, height: 12 }} /> 재생 모드
-                  </button>
-                </div>
-
-                <AnimatePresence>
-                  {interactionMode === 'play' && (
-                    <motion.div
-                      initial={{ opacity: 0, y: -5 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, y: -5 }}
-                      className="playback-options"
-                    >
-                      <label className="play-opt">
-                        <input
-                          type="radio"
-                          name="play-type"
-                          checked={playbackOption === 'loop'}
-                          onChange={() => setPlaybackOption('loop')}
-                        />
-                        <span className="play-opt-box">
-                          <RotateCcw style={{ width: 11, height: 11, animation: 'spin 3s linear infinite' }} /> 반복 재생
-                        </span>
-                      </label>
-                      <label className="play-opt">
-                        <input
-                          type="radio"
-                          name="play-type"
-                          checked={playbackOption === 'once'}
-                          onChange={() => setPlaybackOption('once')}
-                        />
-                        <span className="play-opt-box">
-                          <svg style={{ width: 11, height: 11 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                          1번 재생
-                        </span>
-                      </label>
-                      <label className="play-opt">
-                        <input
-                          type="radio"
-                          name="play-type"
-                          checked={playbackOption === 'popup'}
-                          onChange={() => setPlaybackOption('popup')}
-                        />
-                        <span className="play-opt-box">
-                          <svg style={{ width: 11, height: 11 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
-                          새 창 팝업
-                        </span>
-                      </label>
-                    </motion.div>
-                  )}
-                  {interactionMode === 'search' && (
-                    <motion.p
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      className="mode-hint"
-                    >
-                      결과 클릭 시 대본의 해당 위치로 이동합니다.
-                    </motion.p>
-                  )}
-                </AnimatePresence>
-              </div>
-
-              {/* 검색 결과 목록 — flex:1 영역 */}
-              <div className="search-panel-results">
-                <AnimatePresence mode="sync">
-                  {searchResults.length > 0 && (
-                    <motion.div
-                      key="search-results"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      style={{ display: 'flex', flexDirection: 'column', height: '100%' }}
-                    >
-                      <div style={{
-                        padding: '0.3rem 0',
-                        fontSize: '0.7rem', color: 'var(--text-muted)',
-                        borderTop: '1px solid var(--border)',
-                        display: 'flex', alignItems: 'center', gap: '0.3rem',
-                        flexShrink: 0,
-                      }}>
-                        <Clock style={{ width: 11, height: 11 }} />
-                        {searchResults.length}개 결과
-                      </div>
-                      <div className="search-results-panel">
-                        {searchResults.map((result, idx) => (
-                          <motion.div
-                            key={`${result.matchIndex}-${idx}`}
-                            initial={{ opacity: 0, x: -6 }}
-                            animate={{ opacity: 1, x: 0 }}
-                            transition={{ delay: Math.min(idx * 0.03, 0.2) }}
-                            onClick={() => openYouTubeAtTime(
-                              result.matchIndex,
-                              result.segment.start,
-                              { startIdx: result.loopStartIdx, endIdx: result.loopEndIdx },
-                            )}
-                            className={`search-result-item${
-                              loopMode && loopConfig &&
-                              loopConfig.matchIndex >= result.loopStartIdx &&
-                              loopConfig.matchIndex + loopConfig.endOffset <= result.loopEndIdx
-                                ? ' playing' : ''
-                            }`}
-                          >
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flex: 1, minWidth: 0 }}>
-                              <span className="timestamp-badge">{formatTimestamp(result.segment.start)}</span>
-                              <p className="search-result-text">
-                                {highlightText(result.segment.text, searchQuery)}
-                              </p>
-                            </div>
-                            <button
-                              className="btn-result-loop"
-                              title="이 구간 즉시 반복 재생"
-                              onClick={(e) => {
-                                e.stopPropagation(); // 부모의 onClick(검색 모드 이동) 방지
-                                // 강제로 반복 재생 설정
-                                const base = result.loopStartIdx;
-                                const endOffset = Math.max(0, result.loopEndIdx - base);
-                                setLoopConfig({ matchIndex: base, startOffset: 0, endOffset });
-                                setInteractionMode('play');
-                                if (playbackOption === 'popup') {
-                                  setPlaybackOption('loop');
-                                }
-                              }}
-                            >
-                              <RotateCcw style={{ width: 12, height: 12 }} />
-                            </button>
-                            <button
-                              className="btn-result-loop"
-                              title={`${formatTimestamp(result.segment.start)}부터 재생`}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const player = loopPlayerRef.current;
-                                if (player?.seekTo) {
-                                  player.seekTo(result.segment.start, true);
-                                  player.playVideo();
-                                }
-                              }}
-                            >
-                              <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-                            </button>
-                          </motion.div>
-                        ))}
-                      </div>
-                    </motion.div>
-                  )}
-                  {searchQuery && searchResults.length === 0 && segments.length > 0 && (
-                    <motion.div
-                      key="no-result"
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      style={{ padding: '0.5rem 0', fontSize: '0.775rem', color: 'var(--warning)', borderTop: '1px solid var(--border)' }}
-                    >
-                      "{searchQuery}" 검색 결과가 없습니다.
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </div>
-            </motion.div>
-          )}
-
           {/* ── 다중 구간 패널 (드래그 모드 ON일 때 left panel에 표시) ── */}
           {hasResult && isDragMode && (
             <motion.div
@@ -1624,7 +1421,7 @@ function App() {
                       if (next && loopConfig) {
                         const s = Math.max(0, loopConfig.matchIndex - loopConfig.startOffset);
                         const en = Math.min(segments.length - 1, loopConfig.matchIndex + loopConfig.endOffset);
-                        setMultiRanges([{ startIdx: s, endIdx: en }]);
+                        setMultiRanges([{ startIdx: s, endIdx: en, repeatCount: 1 }]);
                       } else {
                         setMultiRanges([]);
                       }
@@ -2024,6 +1821,164 @@ function App() {
                             </motion.div>
                           )}
                         </AnimatePresence>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+                <div className="divider-v" />
+                {/* ── 검색 영역 ── */}
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                  <div className="search-field-inline">
+                    <Search style={{ width: 12, height: 12, color: 'var(--text-muted)', flexShrink: 0 }} />
+                    <input
+                      ref={searchInputRef}
+                      type="text"
+                      placeholder="검색..."
+                      defaultValue=""
+                      onChange={(e) => {
+                        if (!e.target.value.trim()) {
+                          setSearchQuery('');
+                          setSearchResults([]);
+                          setShowSearchResults(false);
+                        }
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          handleSearch();
+                          setShowSearchResults(true);
+                        }
+                      }}
+                    />
+                    <button className="btn-search" onClick={() => { handleSearch(); setShowSearchResults(true); }}>
+                      <Search style={{ width: 10, height: 10 }} />
+                    </button>
+                  </div>
+                  {/* 모드 토글 버튼 */}
+                  <button
+                    className={`btn-icon${showModePanel ? ' active' : ''}`}
+                    onClick={() => setShowModePanel(v => !v)}
+                    title="클릭 동작 설정"
+                    style={{ fontSize: '0.68rem' }}
+                  >
+                    {interactionMode === 'search'
+                      ? <><Search style={{ width: 11, height: 11 }} /> 검색</>
+                      : <><Youtube style={{ width: 11, height: 11 }} /> 재생</>
+                    }
+                  </button>
+
+                  {/* 모드 플로팅 패널 */}
+                  <AnimatePresence>
+                    {showModePanel && (
+                      <motion.div
+                        key="mode-popup"
+                        initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                        transition={{ duration: 0.15 }}
+                        className="floating-panel mode-floating"
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)' }}>클릭 동작</span>
+                          <button className="floating-close" onClick={() => setShowModePanel(false)}>✕</button>
+                        </div>
+                        <div className="mode-tabs">
+                          <button className={`mode-tab ${interactionMode === 'search' ? 'active' : ''}`}
+                            onClick={() => { setInteractionMode('search'); setShowModePanel(false); }}>
+                            <Search style={{ width: 12, height: 12 }} /> 검색 모드
+                          </button>
+                          <button className={`mode-tab ${interactionMode === 'play' ? 'active' : ''}`}
+                            onClick={() => { setInteractionMode('play'); setShowModePanel(false); }}>
+                            <Youtube style={{ width: 12, height: 12 }} /> 재생 모드
+                          </button>
+                        </div>
+                        {interactionMode === 'play' && (
+                          <div className="playback-options" style={{ marginTop: '0.4rem' }}>
+                            <label className="play-opt">
+                              <input type="radio" name="play-type" checked={playbackOption === 'loop'} onChange={() => setPlaybackOption('loop')} />
+                              <span className="play-opt-box"><RotateCcw style={{ width: 11, height: 11 }} /> 반복</span>
+                            </label>
+                            <label className="play-opt">
+                              <input type="radio" name="play-type" checked={playbackOption === 'once'} onChange={() => setPlaybackOption('once')} />
+                              <span className="play-opt-box"><svg style={{ width: 11, height: 11 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg> 1회</span>
+                            </label>
+                            <label className="play-opt">
+                              <input type="radio" name="play-type" checked={playbackOption === 'popup'} onChange={() => setPlaybackOption('popup')} />
+                              <span className="play-opt-box"><svg style={{ width: 11, height: 11 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg> 팝업</span>
+                            </label>
+                          </div>
+                        )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
+                  {/* 검색 결과 플로팅 패널 */}
+                  <AnimatePresence>
+                    {showSearchResults && (searchResults.length > 0 || (searchQuery && searchResults.length === 0)) && (
+                      <motion.div
+                        key="search-results-float"
+                        initial={{ opacity: 0, y: -6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, y: -6 }}
+                        transition={{ duration: 0.15 }}
+                        className="floating-panel search-results-floating"
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.3rem', flexShrink: 0 }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                            <Clock style={{ width: 11, height: 11 }} />
+                            {searchResults.length}개 결과
+                          </span>
+                          <button className="floating-close" onClick={() => setShowSearchResults(false)}>✕</button>
+                        </div>
+                        {searchResults.length > 0 ? (
+                          <div className="search-results-panel">
+                            {searchResults.map((result, idx) => (
+                              <div
+                                key={`${result.matchIndex}-${idx}`}
+                                onClick={() => openYouTubeAtTime(
+                                  result.matchIndex,
+                                  result.segment.start,
+                                  { startIdx: result.loopStartIdx, endIdx: result.loopEndIdx },
+                                )}
+                                className={`search-result-item${
+                                  loopMode && loopConfig &&
+                                  loopConfig.matchIndex >= result.loopStartIdx &&
+                                  loopConfig.matchIndex + loopConfig.endOffset <= result.loopEndIdx
+                                    ? ' playing' : ''
+                                }`}
+                              >
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flex: 1, minWidth: 0 }}>
+                                  <span className="timestamp-badge">{formatTimestamp(result.segment.start)}</span>
+                                  <p className="search-result-text">
+                                    {highlightText(result.segment.text, searchQuery)}
+                                  </p>
+                                </div>
+                                <button className="btn-result-loop" title="반복 재생"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const base = result.loopStartIdx;
+                                    const endOffset = Math.max(0, result.loopEndIdx - base);
+                                    setLoopConfig({ matchIndex: base, startOffset: 0, endOffset });
+                                    setInteractionMode('play');
+                                    if (playbackOption === 'popup') setPlaybackOption('loop');
+                                  }}>
+                                  <RotateCcw style={{ width: 12, height: 12 }} />
+                                </button>
+                                <button className="btn-result-loop" title={`${formatTimestamp(result.segment.start)}부터 재생`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    const player = loopPlayerRef.current;
+                                    if (player?.seekTo) { player.seekTo(result.segment.start, true); player.playVideo(); }
+                                  }}>
+                                  <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <div style={{ padding: '0.5rem 0', fontSize: '0.75rem', color: 'var(--warning)' }}>
+                            "{searchQuery}" 검색 결과가 없습니다.
+                          </div>
+                        )}
                       </motion.div>
                     )}
                   </AnimatePresence>

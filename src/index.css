@@ -1491,6 +1491,37 @@ h1, h2, h3, h4 {
   color: var(--text-primary);
 }
 
+/* 구간 선택 핀 표시 */
+.transcript-seg.range-pin-start {
+  position: relative;
+  background: rgba(99, 102, 241, 0.12) !important;
+  border-left-color: var(--brand) !important;
+}
+
+.transcript-seg.range-pin-start::before {
+  content: '📌 시작';
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.6rem;
+  font-weight: 700;
+  color: var(--brand-light);
+  background: var(--surface-2);
+  border: 1px solid var(--brand);
+  border-radius: 4px;
+  padding: 0.1rem 0.4rem;
+  letter-spacing: 0.04em;
+  z-index: 1;
+  pointer-events: none;
+  animation: pinPulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pinPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
 /* 발음 자막 입력 */
 .seg-translation {
   display: none;

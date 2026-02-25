@@ -387,8 +387,9 @@ function App() {
   const [activeMultiRangeIdx, setActiveMultiRangeIdx] = useState(0);   // 현재 재생 중인 구간 번호
   const [dragStartIdx, setDragStartIdx] = useState<number | null>(null); // 드래그 시작 세그먼트 인덱스
   // ref: state 업데이트 비동기 지연 없이 드래그 핸들러에서 즉시 읽기 위한 동기 참조
-  const dragStartIdxRef   = useRef<number | null>(null); // 드래그 시작 위치
-  const dragCurrentIdxRef = useRef<number | null>(null); // 드래그 현재(마지막) 위치
+  const dragStartIdxRef   = useRef<number | null>(null);
+  const dragCurrentIdxRef = useRef<number | null>(null);
+  const rangeClickRef     = useRef<number | null>(null); // 클릭 2회 구간 설정용 첫 번째 클릭 위치
   const [isTrackingMode, setIsTrackingMode] = useState(true);           // 재생 위치 트래킹 모드 (기본값 ON)
   const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
   const [timestampPrecision, setTimestampPrecision] = useState(0);       // 타임스탬프 정밀도 (0:초, 1:0.1s, 2:0.01s, 3:ms)
@@ -785,35 +786,67 @@ function App() {
     dragCurrentIdxRef.current = null;
     setDragStartIdx(null);
 
-    const endIdx     = currentIdx ?? startIdx;
+    const endIdx = currentIdx ?? startIdx;
+
+    // 클릭(드래그 없이 같은 지점에서 mouseUp)
+    if (startIdx === endIdx) {
+      if (rangeClickRef.current === null) {
+        // 첫 번째 클릭: 시작점 설정 + 핀 표시
+        rangeClickRef.current = startIdx;
+        clearRangePins();
+        segmentRefs.current[startIdx]?.classList.add('range-pin-start');
+        applyDragHighlight(startIdx, startIdx);
+        return;
+      } else {
+        // 두 번째 클릭: 구간 확정
+        const first  = rangeClickRef.current;
+        const second = startIdx;
+        rangeClickRef.current = null;
+        const rangeStart = Math.min(first, second);
+        const rangeEnd   = Math.max(first, second);
+        clearRangePins();
+        applyDragHighlight(rangeStart, rangeEnd);
+        finalizeRange(rangeStart, rangeEnd);
+        return;
+      }
+    }
+
+    // 드래그: 기존 동작
+    rangeClickRef.current = null;
+    clearRangePins();
     const rangeStart = Math.min(startIdx, endIdx);
     const rangeEnd   = Math.max(startIdx, endIdx);
+    finalizeRange(rangeStart, rangeEnd);
+  };
 
+  /** 핀 표시 제거 */
+  const clearRangePins = () => {
+    segmentRefs.current.forEach(el => {
+      el?.classList.remove('range-pin-start');
+    });
+  };
+
+  /** 구간 확정 공통 로직 */
+  const finalizeRange = (rangeStart: number, rangeEnd: number) => {
     if (isMultiRangeMode) {
-      // 이미 동일 구간이 있으면 추가하지 않음
       const isDup = multiRanges.some(r => r.startIdx === rangeStart && r.endIdx === rangeEnd);
       if (!isDup) {
         const isFirst = multiRanges.length === 0;
         setMultiRanges(prev => [...prev, { startIdx: rangeStart, endIdx: rangeEnd }]);
-
         if (isFirst) {
-          // 첫 번째 구간: 플레이어 시작
           setLoopConfig({ matchIndex: rangeStart, startOffset: 0, endOffset: rangeEnd - rangeStart });
           setInteractionMode('play');
-          if (playbackOption === 'popup') setPlaybackOption('loop');
+          if (playbackOptionRef.current === 'popup') setPlaybackOption('loop');
         }
-        // 이후 구간: setLoopConfig 호출 안 함 → 재생 중단 없음
-        // loopConfig는 좌화 사이클링 useEffect가 자동 관리
       }
     } else {
-      // 단일 구간 모드: 기존 동작
       setLoopConfig({
         matchIndex:  rangeStart,
         startOffset: 0,
         endOffset:   rangeEnd - rangeStart,
       });
       setInteractionMode('play');
-      if (playbackOption === 'popup') setPlaybackOption('loop');
+      if (playbackOptionRef.current === 'popup') setPlaybackOption('loop');
     }
   };
 
@@ -1650,10 +1683,10 @@ function App() {
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>
-              <div className={`mode-toggle-bar ${isDragMode ? 'active' : ''}`} onClick={() => setIsDragMode(v => !v)}>
+              <div className={`mode-toggle-bar ${isDragMode ? 'active' : ''}`} onClick={() => { setIsDragMode(v => { if (v) { rangeClickRef.current = null; } return !v; }); }}>
                 <div className="mode-toggle-info">
                   <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-2 2-2-2"/><path d="M15 6l-2-2-2 2"/><path d="M18 15l2-2-2-2"/><path d="M6 15l-2-2 2-2"/></svg></span>
-                  <div className="mode-toggle-texts"><span className="mode-toggle-title">드래그 영역 재생</span><span className="mode-toggle-desc">구간 직접 지정</span></div>
+                  <div className="mode-toggle-texts"><span className="mode-toggle-title">구간 재생</span><span className="mode-toggle-desc">클릭/드래그로 구간 지정</span></div>
                 </div>
                 <div className="toggle">
                   <input type="checkbox" checked={isDragMode} onChange={(e) => { e.stopPropagation(); setIsDragMode(e.target.checked); }} />

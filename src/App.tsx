@@ -302,7 +302,8 @@ function App() {
 
   // ─── 상태(State) 정의 ──────────────────────────────────────────
 
-  const [url, setUrl] = useState('');           // 사용자가 입력한 YouTube URL
+  const [url, setUrl] = useState('');
+  const urlInputRef = useRef<HTMLInputElement>(null);
   const [loading, setLoading] = useState(false); // 백엔드 요청 진행 중 여부 (로딩 스피너 제어)
   const [transcript, setTranscript] = useState(''); // 추출된 전체 자막 텍스트 (평문)
   const [segments, setSegments] = useState<Segment[]>([]); // 타임스탬프별 세그먼트 배열
@@ -1085,6 +1086,34 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMultiRangeMode, multiRanges, loopMode, segments, rangeGap, dragStartIdx]);
 
+  // ─── 스페이스바 재생/일시정지 토글 ─────────────────────────────
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.code !== 'Space') return;
+      // input, textarea, button 등에 포커스 시 무시
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'SELECT') return;
+      const player = loopPlayerRef.current;
+      if (!player?.getPlayerState) return;
+      e.preventDefault();
+      const state = player.getPlayerState();
+      if (state === 1) { player.pauseVideo(); } else { player.playVideo(); }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, []);
+
+  // ─── 탭 전환 시 URL 입력창 자동 포커스 ───────────────────────
+  useEffect(() => {
+    const handler = () => {
+      if (document.visibilityState === 'visible' && !videoId) {
+        urlInputRef.current?.focus();
+      }
+    };
+    document.addEventListener('visibilitychange', handler);
+    return () => document.removeEventListener('visibilitychange', handler);
+  }, [videoId]);
+
   // ─── 저장 옵션 드롭다운 외부 클릭 시 닫기 ────────────────────
   useEffect(() => {
     if (!showSaveOptions) return;
@@ -1386,7 +1415,9 @@ function App() {
               <div className="url-field">
                 <Youtube style={{ width: 16, height: 16, color: 'var(--text-muted)', flexShrink: 0 }} />
                 <input
+                  ref={urlInputRef}
                   type="text"
+                  autoFocus
                   placeholder="https://www.youtube.com/watch?v=..."
                   value={url}
                   onChange={(e) => {

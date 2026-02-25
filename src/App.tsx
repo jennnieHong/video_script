@@ -392,7 +392,9 @@ function App() {
   const dragStartIdxRef   = useRef<number | null>(null);
   const dragCurrentIdxRef = useRef<number | null>(null);
   const rangeClickRef     = useRef<number | null>(null); // 클릭 2회 구간 설정용 첫 번째 클릭 위치
-  const [isTrackingMode, setIsTrackingMode] = useState(true);           // 재생 위치 트래킹 모드 (기본값 ON)
+  const [isTrackingMode, setIsTrackingMode] = useState(true);
+  const [isAutoScroll, setIsAutoScroll] = useState(true);                // 자동 스크롤 ON/OFF (트래킹과 독립)
+  const isAutoScrollRef = useRef(true);
   const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
   const [timestampPrecision, setTimestampPrecision] = useState(0);       // 타임스탬프 정밀도 (0:초, 1:0.1s, 2:0.01s, 3:ms)
   const [isSeekMode, setIsSeekMode] = useState(false);                  // 선택지점부터 재생 모드 (각 세그먼트에 ▶ 버튼 표시)
@@ -901,7 +903,9 @@ function App() {
       }
       if (found !== -1) {
         updateActiveSegDom(found);
-        segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        if (isAutoScrollRef.current) {
+          segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
       }
     }, 50);
     return () => clearInterval(timer);
@@ -1527,10 +1531,20 @@ function App() {
               <div className={`mode-toggle-bar ${isTrackingMode ? 'active' : ''}`} onClick={() => setIsTrackingMode(v => !v)}>
                 <div className="mode-toggle-info">
                   <span className="mode-toggle-icon"><Clock style={{ width: 14, height: 14 }} /></span>
-                  <div className="mode-toggle-texts"><span className="mode-toggle-title">위치 트래킹</span><span className="mode-toggle-desc">재생 시 자동 스크롤</span></div>
+                  <div className="mode-toggle-texts"><span className="mode-toggle-title">위치 트래킹</span><span className="mode-toggle-desc">재생 위치 하이라이트</span></div>
                 </div>
                 <div className="toggle">
                   <input type="checkbox" checked={isTrackingMode} onChange={(e) => { e.stopPropagation(); setIsTrackingMode(e.target.checked); }} />
+                  <div className="toggle-track" /><div className="toggle-thumb" />
+                </div>
+              </div>
+              <div className={`mode-toggle-bar ${isAutoScroll ? 'active' : ''}`} onClick={() => { setIsAutoScroll(v => !v); isAutoScrollRef.current = !isAutoScrollRef.current; }}>
+                <div className="mode-toggle-info">
+                  <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
+                  <div className="mode-toggle-texts"><span className="mode-toggle-title">자동 스크롤</span><span className="mode-toggle-desc">재생 위치로 자동 이동</span></div>
+                </div>
+                <div className="toggle">
+                  <input type="checkbox" checked={isAutoScroll} onChange={(e) => { e.stopPropagation(); setIsAutoScroll(e.target.checked); isAutoScrollRef.current = e.target.checked; }} />
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>

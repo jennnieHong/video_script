@@ -748,6 +748,40 @@ function App() {
   const [isTrackingMode, setIsTrackingMode] = useState(true);
   const [isAutoScroll, setIsAutoScroll] = useState(true);                // 자동 스크롤 ON/OFF (트래킹과 독립)
   const isAutoScrollRef = useRef(true);
+  const transcriptScrollRef = useRef<HTMLDivElement>(null);
+  const userScrollingRef = useRef(false);   // 사용자 휠 스크롤 중에는 scrollIntoView 억제
+  const wheelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const programmaticScrollRef = useRef(false); // scrollIntoView 호출 중이면 true (스크롤바 감지와 구분)
+
+  /** 휠 스크롤: scrollIntoView 억제 (scroll 이벤트가 가시성 판단) */
+  const handleTranscriptWheel = useCallback(() => {
+    userScrollingRef.current = true;
+    programmaticScrollRef.current = false;
+    if (wheelTimeoutRef.current) clearTimeout(wheelTimeoutRef.current);
+    wheelTimeoutRef.current = setTimeout(() => { userScrollingRef.current = false; }, 500);
+  }, []);
+
+  // 자동 스크롤 자동켜기: 새 재생 구간 설정 시 자동 스크롤을 다시 ON
+  const [autoScrollReEnable, setAutoScrollReEnable] = useState(true);
+  const autoScrollReEnableRef = useRef(true);
+  const [reEnableTrigger, setReEnableTrigger] = useState(0);  // 재생 액션 트리거 카운터
+
+  // loopConfig 변경 OR 지점재생 클릭 시 자동 스크롤 재활성화
+  useEffect(() => {
+    if (reEnableTrigger > 0 && autoScrollReEnableRef.current && !isAutoScrollRef.current) {
+      // 이전 재생 위치로 되돌아가지 않도록 잠시 scrollIntoView 억제
+      userScrollingRef.current = true;
+      isAutoScrollRef.current = true;
+      setIsAutoScroll(true);
+      setTimeout(() => { userScrollingRef.current = false; }, 300);
+    }
+  }, [reEnableTrigger]);
+
+  // loopConfig 변경 시도 트리거 증가
+  useEffect(() => {
+    if (loopConfig) setReEnableTrigger(v => v + 1);
+  }, [loopConfig]);
+
   const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
   const [timestampPrecision, setTimestampPrecision] = useState(0);       // 타임스탬프 정밀도 (0:초, 1:0.1s, 2:0.01s, 3:ms)
   const [isSeekMode, setIsSeekMode] = useState(false);                  // 선택지점부터 재생 모드 (각 세그먼트에 ▶ 버튼 표시)
@@ -1384,13 +1418,53 @@ function App() {
       }
       if (found !== -1) {
         updateActiveSegDom(found);
-        if (isAutoScrollRef.current) {
-          segmentRefs.current[found]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        if (isAutoScrollRef.current && !userScrollingRef.current) {
+          const segEl = segmentRefs.current[found];
+          const scrollEl = transcriptScrollRef.current;
+          if (segEl && scrollEl) {
+            const segRect = segEl.getBoundingClientRect();
+            const scrollRect = scrollEl.getBoundingClientRect();
+            const inView = segRect.top >= scrollRect.top && segRect.bottom <= scrollRect.bottom;
+            if (!inView) {
+              // 뷰포트 밖일 때만 scrollIntoView 호출 (이미 보이면 그냥 둠)
+              programmaticScrollRef.current = true;
+              segEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+              setTimeout(() => { programmaticScrollRef.current = false; }, 200);
+            }
+          }
         }
       }
     }, 50);
     return () => clearInterval(timer);
   }, [segments, isTrackingMode, dragStartIdx, trackingOffset, updateActiveSegDom]);
+
+  // 휠/스크롤바 모두 통합 감지: scroll 이벤트는 위치 변경 후 발생 → 정확한 가시성 체크
+  useEffect(() => {
+    const scrollEl = transcriptScrollRef.current;
+    if (!scrollEl) return;
+    const onScroll = () => {
+      if (!isAutoScrollRef.current) return;
+      if (programmaticScrollRef.current) return;
+      // 사용자 스크롤 감지 → scrollIntoView 억제 (wheelTimeoutRef 공유)
+      userScrollingRef.current = true;
+      programmaticScrollRef.current = false;
+      if (wheelTimeoutRef.current) clearTimeout(wheelTimeoutRef.current);
+      wheelTimeoutRef.current = setTimeout(() => { userScrollingRef.current = false; }, 500);
+      // 즉시 가시성 체크
+      const idx = activeSegIdxRef.current;
+      if (idx < 0) return;
+      const segEl = segmentRefs.current[idx];
+      if (!segEl) return;
+      const segRect = segEl.getBoundingClientRect();
+      const scrollRect = scrollEl.getBoundingClientRect();
+      if (segRect.bottom < scrollRect.top || segRect.top > scrollRect.bottom) {
+        isAutoScrollRef.current = false;
+        setIsAutoScroll(false);
+      }
+    };
+    scrollEl.addEventListener('scroll', onScroll, { passive: true });
+    return () => scrollEl.removeEventListener('scroll', onScroll);
+  }, [segments.length]);
 
   // ─── 다중 구간 순차 재생 ──────────────────────────────────────
   // gapTimerRef / isInGapRef: 구간 간격 대기 상태 관리
@@ -1558,6 +1632,7 @@ function App() {
               onClick={() => {
                 if (!isSeekModeRef.current) return;
                 setLoopConfig(null);
+                setReEnableTrigger(v => v + 1);  // 지점재생 시 자동스크롤 재활성화 트리거
                 const player = loopPlayerRef.current;
                 if (player?.seekTo) {
                   player.seekTo(seg.start, true);
@@ -2101,6 +2176,17 @@ function App() {
                 </div>
                 <div className="toggle">
                   <input type="checkbox" checked={isAutoScroll} onChange={(e) => { e.stopPropagation(); setIsAutoScroll(e.target.checked); isAutoScrollRef.current = e.target.checked; }} />
+                  <div className="toggle-track" /><div className="toggle-thumb" />
+                </div>
+              </div>
+              {/* 자동 스크롤 자동켜기 토글 */}
+              <div className={`mode-toggle-bar sub-toggle ${autoScrollReEnable ? 'active' : ''}`} onClick={() => { setAutoScrollReEnable(v => !v); autoScrollReEnableRef.current = !autoScrollReEnableRef.current; }}>
+                <div className="mode-toggle-info">
+                  <span className="mode-toggle-icon" style={{ opacity: 0.7 }}>⚡</span>
+                  <div className="mode-toggle-texts"><span className="mode-toggle-title">재생 시 자동켜기</span><span className="mode-toggle-desc">새 구간 시작 시 자동스크롤 ON</span></div>
+                </div>
+                <div className="toggle">
+                  <input type="checkbox" checked={autoScrollReEnable} onChange={(e) => { e.stopPropagation(); setAutoScrollReEnable(e.target.checked); autoScrollReEnableRef.current = e.target.checked; }} />
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>
@@ -2835,9 +2921,11 @@ function App() {
 
               {/* 자막 — 세그먼트별 렌더링 (하이라이트 + 재생 위치 추적) */}
               <div 
+                ref={transcriptScrollRef}
                 className={`transcript-scroll${isDragMode ? ' drag-mode' : ''}${isSeekMode ? ' seek-mode' : ''}${loopMode ? ' loop-mode' : ''}${showTranslation ? ' show-translation' : ''}${isEditMode ? ' edit-mode' : ''}`}
                 onMouseUp={handleDragEnd}
                 onMouseLeave={handleDragEnd}
+                onWheel={handleTranscriptWheel}
               >
                 {renderedSegments}
               </div>

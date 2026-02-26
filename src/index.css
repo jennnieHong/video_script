@@ -1343,6 +1343,14 @@ body.is-resizing iframe {
   border-color: var(--brand);
 }
 
+.mode-toggle-bar.sub-toggle {
+  margin-left: 1.2rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.72rem;
+  opacity: 0.85;
+  flex: 1;
+}
+
 .mode-toggle-info {
   display: flex;
   align-items: center;
@@ -1736,6 +1744,7 @@ body.is-resizing iframe {
   border-radius: var(--radius-sm);
   transition: background 0.12s;
   border-left: 2px solid transparent;
+  min-height: 2.4rem; /* 편집 모드 전환 시 높이 고정 */
 }
 
 .transcript-seg:hover {
@@ -1926,13 +1935,23 @@ body.is-resizing iframe {
   word-break: break-word;
 }
 
-/* 세그먼트 편집 모드 */
+/* 세그먼트 편집 모드 — 높이를 일반 모드와 동일하게 유지 */
 input.seg-edit-time {
   width: 60px;
+  height: 1.6rem;          /* .seg-timestamp과 동일 */
+  box-sizing: border-box;
   text-align: center;
-  outline: none;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 0.695rem;
+  font-weight: 600;
   color: var(--brand-light);
+  background: rgba(99, 102, 241, 0.1);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: 5px;
+  padding: 0 0.45rem;
+  outline: none;
   cursor: text;
+  flex-shrink: 0;
 }
 
 input.seg-edit-time:focus {
@@ -1943,11 +1962,13 @@ input.seg-edit-time:focus {
 input.seg-edit-text {
   flex: 1;
   min-width: 0;
+  height: 1.6rem;          /* .seg-text 한 줄 높이에 맞춤 */
+  box-sizing: border-box;
   background: var(--surface-1);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  padding: 0.2rem 0.4rem;
-  font-size: 0.85rem;
+  padding: 0 0.4rem;
+  font-size: 0.875rem;
   color: var(--text-primary);
   outline: none;
   transition: border-color 0.15s;
@@ -1957,7 +1978,7 @@ input.seg-edit-text:focus {
   border-color: var(--brand);
 }
 
-/* 편집 모드 표시/숨김 제어 */
+/* 편집 모드 표시/숨김 제어 — 부모 .edit-mode 클래스 기반 */
 .seg-edit-time,
 .seg-edit-text {
   display: none;

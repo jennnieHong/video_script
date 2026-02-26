@@ -180,8 +180,9 @@ function LoopPlayer({
       if (destroyed || !containerRef.current) return;
 
       playerRef.current = new window.YT.Player(containerRef.current, {
+        width: '100%',
+        height: '100%',
         videoId,
-        //host: 'https://www.youtube.com',
         playerVars: {
           start: startRef.current, // 초기 재생 시작 위치 (이후 변경은 ref+interval 처리)
           autoplay: 1,
@@ -345,6 +346,69 @@ function App() {
   const [searchRange, setSearchRange] = useState(10);
   const [fuzzyThreshold, setFuzzyThreshold] = useState(0.3); // 유사도 (0=정확, 1=느슨)
   const [showSearchOpts, setShowSearchOpts] = useState(false);
+
+  // ─── 레이아웃 리사이즈 state ─────────────────────────────────────
+  interface LayoutSizes { leftWidth: number; clipWidth: number; videoRatio: number; }
+  const LAYOUT_DEFAULTS: LayoutSizes = { leftWidth: 400, clipWidth: 300, videoRatio: 50 };
+  const loadLayout = (): LayoutSizes => {
+    try {
+      const raw = localStorage.getItem('ys-layout');
+      return raw ? { ...LAYOUT_DEFAULTS, ...JSON.parse(raw) } : { ...LAYOUT_DEFAULTS };
+    } catch { return { ...LAYOUT_DEFAULTS }; }
+  };
+  const [layoutSizes, setLayoutSizes] = useState<LayoutSizes>(loadLayout);
+  const layoutRef = useRef(layoutSizes);
+  const dragRef = useRef<{ type: string; startX: number; startY: number; startVal: number } | null>(null);
+
+  // 레이아웃 변경 시 localStorage에 저장
+  useEffect(() => {
+    layoutRef.current = layoutSizes;
+    localStorage.setItem('ys-layout', JSON.stringify(layoutSizes));
+  }, [layoutSizes]);
+
+  const handleResizeStart = (type: string) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    const startVal = type === 'left' ? layoutSizes.leftWidth
+      : type === 'clip' ? layoutSizes.clipWidth
+      : layoutSizes.videoRatio;
+    dragRef.current = { type, startX: e.clientX, startY: e.clientY, startVal };
+    document.body.classList.add('is-resizing');
+
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      const d = dragRef.current;
+      if (d.type === 'left') {
+        const newW = Math.max(250, Math.min(700, d.startVal + (ev.clientX - d.startX)));
+        setLayoutSizes(prev => ({ ...prev, leftWidth: newW }));
+      } else if (d.type === 'clip') {
+        const newW = Math.max(200, Math.min(600, d.startVal - (ev.clientX - d.startX)));
+        setLayoutSizes(prev => ({ ...prev, clipWidth: newW }));
+      } else if (d.type === 'video') {
+        const parent = (e.target as HTMLElement).closest('.right-panel');
+        if (!parent) return;
+        const rect = parent.getBoundingClientRect();
+        const pct = Math.max(15, Math.min(80, ((ev.clientY - rect.top) / rect.height) * 100));
+        setLayoutSizes(prev => ({ ...prev, videoRatio: pct }));
+      }
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      document.body.classList.remove('is-resizing');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+    document.body.style.cursor = type === 'video' ? 'row-resize' : 'col-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
+  const resetLayout = () => {
+    setLayoutSizes({ ...LAYOUT_DEFAULTS });
+    localStorage.removeItem('ys-layout');
+  };
 
   // ─── 대본 저장/불러오기 state ────────────────────────────────────
   const savedScriptsRef = useRef<SavedScript[]>(loadAllScripts());
@@ -1548,7 +1612,11 @@ function App() {
       </nav>
 
       {/* ── Main Layout ──────────────────────────────────────── */}
-      <div className={`main-content${hasResult ? ' has-clip-panel' : ' hero-layout'}`}>
+      <div className={`main-content${hasResult ? ' has-clip-panel' : ' hero-layout'}`}
+        style={hasResult ? {
+          gridTemplateColumns: `${layoutSizes.leftWidth}px auto 1fr auto ${layoutSizes.clipWidth}px`
+        } : undefined}
+      >
 
         {/* ══ 좌측 패널: 입력 & 컨트롤 ══════════════════════════ */}
         <aside className="left-panel">
@@ -1882,6 +1950,9 @@ function App() {
           )}
         </aside>
 
+        {/* 좌↔우 드래그 핸들 */}
+        {hasResult && <div className="resize-handle resize-handle-v" onMouseDown={handleResizeStart('left')} />}
+
         {/* ══ 우측 패널: 결과 ════════════════════════════════════ */}
         <main className="right-panel">
 
@@ -1921,7 +1992,7 @@ function App() {
               style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
             >
               {/* 비디오 및 컨트롤 레이아웃 컨테이너 */}
-              <div className="video-and-controls">
+              <div className="video-and-controls" style={{ height: `${layoutSizes.videoRatio}%`, maxHeight: 'none' }}>
                 {videoId && (
                   <div className="video-section">
                     <LoopPlayer
@@ -1944,6 +2015,8 @@ function App() {
                   </div>
                 )}
               </div>
+              {/* 비디오↔대본 드래그 핸들 */}
+              <div className="resize-handle resize-handle-h" onMouseDown={handleResizeStart('video')} />
 
 
               {/* 액션 바 */}
@@ -2329,6 +2402,18 @@ function App() {
                           {fuzzySearch ? `유사도 ${fuzzyThreshold.toFixed(2)}: 낮을수록 정확, 높을수록 느슨` : '정확 일치 검색'}<br/>
                           구간: {searchRange}개 세그먼트 범위 내 매칭
                         </p>
+                        <div style={{ borderTop: '1px solid var(--border)', marginTop: '0.4rem', paddingTop: '0.4rem' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>레이아웃</span>
+                            <button
+                              style={{ fontSize: '0.62rem', padding: '0.15rem 0.4rem', borderRadius: 4, border: '1px solid var(--border-strong)', background: 'var(--surface-2)', color: 'var(--text-muted)', cursor: 'pointer' }}
+                              onClick={resetLayout}
+                            >기본값 초기화</button>
+                          </div>
+                          <p style={{ fontSize: '0.58rem', color: 'var(--text-muted)', margin: '0.2rem 0 0' }}>
+                            패널 경계를 드래그하여 크기 조절
+                          </p>
+                        </div>
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -2522,6 +2607,9 @@ function App() {
 
         {/* ══ 3번째 패널: 클립 다운로드 ══════════════════════════ */}
         {hasResult && (
+          <>
+          {/* 우↔클립 드래그 핸들 */}
+          <div className="resize-handle resize-handle-v" onMouseDown={handleResizeStart('clip')} />
           <aside className="clip-panel">
             <p className="section-label" style={{ marginBottom: '0.25rem', flexShrink: 0 }}>
               <Download style={{ width: 11, height: 11 }} />
@@ -2677,6 +2765,7 @@ function App() {
               </>
             )}
           </aside>
+          </>
         )}
       </div>
     </div>

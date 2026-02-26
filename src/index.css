@@ -148,18 +148,46 @@ h1, h2, h3, h4 {
   grid-template-columns: 400px 1fr;
   grid-template-rows: 1fr;
   gap: 0;
-  height: calc(100vh - 56px); /* nav 높이 56px 제외, 뷰포트에 딱 맞춤 */
-  overflow: hidden;           /* 그리드 자체는 스크롤 안 함 */
+  height: calc(100vh - 56px);
+  overflow: hidden;
 }
 
-/* 3단 레이아웃: 클립 패널이 있을 때 */
+/* 3단 레이아웃: 클립 패널이 있을 때 (인라인 style이 오버라이드) */
 .main-content.has-clip-panel {
-  grid-template-columns: 400px 1fr 300px;
+  grid-template-columns: 400px auto 1fr auto 300px;
+}
+
+/* 드래그 리사이즈 핸들 */
+.resize-handle {
+  background: transparent;
+  transition: background 0.15s;
+  z-index: 10;
+  flex-shrink: 0;
+}
+.resize-handle:hover,
+.resize-handle:active {
+  background: var(--brand);
+}
+
+.resize-handle-v {
+  width: 4px;
+  cursor: col-resize;
+  height: 100%;
+}
+
+.resize-handle-h {
+  height: 4px;
+  cursor: row-resize;
+  width: 100%;
+}
+
+/* 드래그 리사이즈 중 iframe이 마우스 이벤트를 가로채지 않도록 차단 */
+body.is-resizing iframe {
+  pointer-events: none !important;
 }
 
 /* Left panel — input & controls */
 .left-panel {
-  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   padding: 0;           /* 내부 요소가 개별 padding을 가짐 */
@@ -1028,6 +1056,8 @@ h1, h2, h3, h4 {
   box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
+  flex: 1;
+  min-height: 0;
 }
 
 .loop-player-bar {
@@ -1048,16 +1078,21 @@ h1, h2, h3, h4 {
 
 .player-stage {
   width: 100%;
-  max-width: 800px;      /* 너무 넓어지지 않게 제한 */
-  margin: 0 auto;        /* 중앙 정렬 */
-  aspect-ratio: 16 / 9;
-  max-height: 45vh;      /* 세로 높이가 화면의 45%를 넘지 않게 함 */
+  flex: 1;
+  min-height: 0;
   background: #000;
+  position: relative;
+  overflow: hidden;
 }
 
-.loop-player-frame {
-  width: 100%;
-  height: 100%;
+.loop-player-frame,
+.player-stage iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100% !important;
+  height: 100% !important;
+  border: none;
 }
 
 .loop-player-label {
@@ -1083,12 +1118,6 @@ h1, h2, h3, h4 {
 .loop-player-close:hover {
   color: white;
   background: rgba(255,255,255,0.08);
-}
-
-.loop-player-frame {
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  display: block;
 }
 
 /* ─── Loop Controls ──────────────────────────────────────── */
@@ -1868,10 +1897,15 @@ input.seg-edit-text:focus {
   display: flex;
   flex-direction: column;
   background: var(--surface-1);
-  border-bottom: 2px solid var(--border-strong);
-  max-height: 65vh;             /* 전체 플레이어+컨트 박스가 화면 65% 이내로 */
-  overflow-y: auto;             /* 컨트롤이 많아지면 내부 스크롤 */
-  flex-shrink: 0;               /* 대본 영역이 밀리지 않게 고정 */
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.video-section {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* 검색 매칭 텍스트 하이라이트 */

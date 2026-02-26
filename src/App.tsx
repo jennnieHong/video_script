@@ -366,6 +366,177 @@ function App() {
   useEffect(() => { localStorage.setItem('ys-left-collapsed', String(leftCollapsed)); }, [leftCollapsed]);
   useEffect(() => { localStorage.setItem('ys-clip-collapsed', String(clipCollapsed)); }, [clipCollapsed]);
 
+  // ─── 플로팅 비디오 state ──────────────────────────────────────────
+  const [isVideoFloating, setIsVideoFloating] = useState(false);
+  const [floatingVideoPos, setFloatingVideoPos] = useState({ x: 100, y: 100, w: 640, h: 360 });
+  const videoContainerRef = useRef<HTMLDivElement>(null);
+  const videoDockZoneRef = useRef<HTMLDivElement>(null);
+  const floatingDragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number; isDragging: boolean } | null>(null);
+  const floatingResizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number; dir: string } | null>(null);
+  // 드래그 시작 시 원본 위치 (분리 임계값 판단용)
+  const videoDetachRef = useRef<{ startX: number; startY: number; originRect: DOMRect | null; isDragging: boolean }>({ startX: 0, startY: 0, originRect: null, isDragging: false });
+  // 마지막 플로팅 크기 기억 (도킹→분리 시 이전 크기 유지)
+  const lastFloatSizeRef = useRef<{ w: number; h: number } | null>(null);
+
+  /** 비디오 영역 상단 바를 잡고 드래그 → 분리/도킹 */
+  const handleVideoGrabStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    const rect = videoContainerRef.current?.getBoundingClientRect() ?? null;
+    if (!isVideoFloating) {
+      // 아직 도킹 상태: 드래그 시작, 임계값 넘으면 분리
+      videoDetachRef.current = { startX: e.clientX, startY: e.clientY, originRect: rect, isDragging: true };
+      document.body.style.cursor = 'grabbing';
+      document.body.style.userSelect = 'none';
+      document.body.classList.add('is-resizing');
+
+      // 분리 후 플로팅 드래그로 전환하기 위한 상태
+      let detached = false;
+      let floatStartX = 0;
+      let floatStartY = 0;
+      let floatPosX = 0;
+      let floatPosY = 0;
+
+      const onMove = (ev: MouseEvent) => {
+        if (detached) {
+          // 이미 분리됨 → 플로팅 위치 업데이트
+          const newX = floatPosX + (ev.clientX - floatStartX);
+          const newY = floatPosY + (ev.clientY - floatStartY);
+          setFloatingVideoPos(prev => ({ ...prev, x: newX, y: newY }));
+          return;
+        }
+        const d = videoDetachRef.current;
+        if (!d.isDragging) return;
+        const dx = Math.abs(ev.clientX - d.startX);
+        const dy = Math.abs(ev.clientY - d.startY);
+        // 40px 이상 이동하면 분리 → 리스너 유지한 채 플로팅 드래그로 전환
+        if (dx > 40 || dy > 40) {
+          d.isDragging = false;
+          detached = true;
+          const saved = lastFloatSizeRef.current;
+          const r = d.originRect;
+          const w = saved ? saved.w : (r ? r.width : 640);
+          const h = saved ? saved.h : (r ? r.height : 360);
+          floatPosX = ev.clientX - w / 2;
+          floatPosY = ev.clientY - 16;
+          floatStartX = ev.clientX;
+          floatStartY = ev.clientY;
+          setFloatingVideoPos({ x: floatPosX, y: floatPosY, w, h });
+          setIsVideoFloating(true);
+        }
+      };
+      const onUp = (ev: MouseEvent) => {
+        videoDetachRef.current.isDragging = false;
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.body.classList.remove('is-resizing');
+        // 분리된 상태에서 mouseUp → 도킹 스냅백 체크
+        if (detached) {
+          const dockEl = videoDockZoneRef.current;
+          if (dockEl) {
+            const r = dockEl.getBoundingClientRect();
+            if (ev.clientX >= r.left - 60 && ev.clientX <= r.right + 60 &&
+                ev.clientY >= r.top - 60 && ev.clientY <= r.bottom + 60) {
+              setIsVideoFloating(false);
+            }
+          }
+        }
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    } else {
+      // 이미 플로팅: 위치 이동
+      floatingDragRef.current = { startX: e.clientX, startY: e.clientY, startPosX: floatingVideoPos.x, startPosY: floatingVideoPos.y, isDragging: true };
+      document.body.style.cursor = 'grabbing';
+      document.body.style.userSelect = 'none';
+      document.body.classList.add('is-resizing');
+
+      const onMove = (ev: MouseEvent) => {
+        const d = floatingDragRef.current;
+        if (!d?.isDragging) return;
+        setFloatingVideoPos(prev => ({
+          ...prev,
+          x: d.startPosX + (ev.clientX - d.startX),
+          y: d.startPosY + (ev.clientY - d.startY),
+        }));
+      };
+      const onUp = (ev: MouseEvent) => {
+        if (floatingDragRef.current) floatingDragRef.current.isDragging = false;
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        document.body.classList.remove('is-resizing');
+        // 도킹 스냅백 체크
+        const dockEl = videoDockZoneRef.current;
+        if (dockEl) {
+          const r = dockEl.getBoundingClientRect();
+          // 드롭 위치가 도킹 영역과 겹치면 도킹
+          if (ev.clientX >= r.left - 60 && ev.clientX <= r.right + 60 &&
+              ev.clientY >= r.top - 60 && ev.clientY <= r.bottom + 60) {
+            setIsVideoFloating(false);
+          }
+        }
+      };
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    }
+  };
+
+  /** 플로팅 창 리사이즈 핸들러 */
+  const handleFloatingResize = (dir: string) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startPos = { ...floatingVideoPos };
+    floatingResizeRef.current = { startX: e.clientX, startY: e.clientY, startW: floatingVideoPos.w, startH: floatingVideoPos.h, dir };
+    document.body.style.cursor =
+      dir === 'se' ? 'nwse-resize' : dir === 'sw' ? 'nesw-resize' :
+      dir === 'e' ? 'ew-resize' : dir === 'w' ? 'ew-resize' :
+      dir === 's' ? 'ns-resize' : 'nwse-resize';
+    document.body.style.userSelect = 'none';
+    document.body.classList.add('is-resizing');
+
+    const onMove = (ev: MouseEvent) => {
+      const r = floatingResizeRef.current;
+      if (!r) return;
+      const dx = ev.clientX - r.startX;
+      const dy = ev.clientY - r.startY;
+
+      let newX = startPos.x;
+      let newW = startPos.w;
+      let newH = startPos.h;
+
+      if (dir.includes('e')) {
+        newW = Math.max(280, r.startW + dx);
+      }
+      if (dir.includes('w')) {
+        newW = Math.max(280, r.startW - dx);
+        newX = startPos.x + (r.startW - newW);
+      }
+      if (dir.includes('s')) {
+        newH = Math.max(180, r.startH + dy);
+      }
+
+      setFloatingVideoPos(prev => ({ ...prev, x: newX, w: newW, h: newH }));
+    };
+    const onUp = () => {
+      floatingResizeRef.current = null;
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.body.classList.remove('is-resizing');
+      // 리사이즈된 크기 기억
+      setFloatingVideoPos(prev => {
+        lastFloatSizeRef.current = { w: prev.w, h: prev.h };
+        return prev;
+      });
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  };
+
   // 레이아웃 변경 시 localStorage에 저장
   useEffect(() => {
     layoutRef.current = layoutSizes;
@@ -2010,7 +2181,53 @@ function App() {
               style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
             >
               {/* 비디오 및 컨트롤 레이아웃 컨테이너 */}
-              <div className="video-and-controls" style={{ height: `${layoutSizes.videoRatio}%`, maxHeight: 'none' }}>
+              {/* 플로팅 중이면 최소 도킹 스트립만 표시 — 대본 영역 최대화 */}
+              {isVideoFloating && (
+                <div
+                  ref={videoDockZoneRef}
+                  className="video-dock-zone"
+                >
+                  <svg style={{ width: 14, height: 14, opacity: 0.4 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                  </svg>
+                  <span>영상을 여기에 놓으면 도킹</span>
+                </div>
+              )}
+
+              {/* 비디오 컨테이너 — 플로팅/도킹을 CSS position으로 전환 (YouTube 플레이어 유지) */}
+              <div
+                ref={videoContainerRef}
+                className={`video-and-controls${isVideoFloating ? ' floating-video-window' : ''}`}
+                style={isVideoFloating ? {
+                  left: floatingVideoPos.x,
+                  top: floatingVideoPos.y,
+                  width: floatingVideoPos.w,
+                  height: floatingVideoPos.h,
+                } : {
+                  height: `${layoutSizes.videoRatio}%`,
+                  maxHeight: 'none',
+                }}
+              >
+                {/* 플로팅 상단 드래그 바 */}
+                {isVideoFloating && (
+                  <div className="floating-video-grab" onMouseDown={handleVideoGrabStart}>
+                    <span className="floating-video-grab-dots">⣿⣿⣿</span>
+                    <span className="floating-video-title">🎬 영상 플레이어</span>
+                    <button
+                      className="floating-video-dock-btn"
+                      title="원래 위치로 도킹"
+                      onClick={(e) => { e.stopPropagation(); setIsVideoFloating(false); }}
+                    >
+                      ⬓
+                    </button>
+                  </div>
+                )}
+                {/* 도킹 상태 그랩 바 */}
+                {!isVideoFloating && (
+                  <div className="video-grab-bar" onMouseDown={handleVideoGrabStart}>
+                    <span className="video-grab-dots">⣿⣿⣿</span>
+                  </div>
+                )}
                 {videoId && (
                   <div className="video-section">
                     <LoopPlayer
@@ -2020,9 +2237,6 @@ function App() {
                       end={loopSegment?.end ?? 0}
                       playbackMode={
                         !loopMode ? 'none' :
-                        // 다중 구간 모드(2개 이상): LoopPlayer 자체 루프 비활성
-                        // → App의 사이클링 useEffect가 구간 전환을 전담
-                        // (LoopPlayer 루프가 살아있으면 seekTo 충돌로 A만 반복되는 버그)
                         (isMultiRangeMode && multiRanges.length >= 2) ? 'none' :
                         (playbackOption === 'once' ? 'once' : 'loop')
                       }
@@ -2032,9 +2246,19 @@ function App() {
                     />
                   </div>
                 )}
+                {/* 플로팅 리사이즈 핸들 */}
+                {isVideoFloating && (
+                  <>
+                    <div className="floating-resize floating-resize-e" onMouseDown={handleFloatingResize('e')} />
+                    <div className="floating-resize floating-resize-s" onMouseDown={handleFloatingResize('s')} />
+                    <div className="floating-resize floating-resize-w" onMouseDown={handleFloatingResize('w')} />
+                    <div className="floating-resize floating-resize-se" onMouseDown={handleFloatingResize('se')} />
+                    <div className="floating-resize floating-resize-sw" onMouseDown={handleFloatingResize('sw')} />
+                  </>
+                )}
               </div>
               {/* 비디오↔대본 드래그 핸들 */}
-              <div className="resize-handle resize-handle-h" onMouseDown={handleResizeStart('video')} />
+              {!isVideoFloating && <div className="resize-handle resize-handle-h" onMouseDown={handleResizeStart('video')} />}
 
 
               {/* 액션 바 */}

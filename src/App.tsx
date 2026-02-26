@@ -360,6 +360,12 @@ function App() {
   const layoutRef = useRef(layoutSizes);
   const dragRef = useRef<{ type: string; startX: number; startY: number; startVal: number } | null>(null);
 
+  // ─── 패널 접기/펼치기 state ───────────────────────────────────────
+  const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('ys-left-collapsed') === 'true');
+  const [clipCollapsed, setClipCollapsed] = useState(() => localStorage.getItem('ys-clip-collapsed') === 'true');
+  useEffect(() => { localStorage.setItem('ys-left-collapsed', String(leftCollapsed)); }, [leftCollapsed]);
+  useEffect(() => { localStorage.setItem('ys-clip-collapsed', String(clipCollapsed)); }, [clipCollapsed]);
+
   // 레이아웃 변경 시 localStorage에 저장
   useEffect(() => {
     layoutRef.current = layoutSizes;
@@ -1615,12 +1621,12 @@ function App() {
       {/* ── Main Layout ──────────────────────────────────────── */}
       <div className={`main-content${hasResult ? ' has-clip-panel' : ' hero-layout'}`}
         style={hasResult ? {
-          gridTemplateColumns: `${layoutSizes.leftWidth}px auto 1fr auto ${layoutSizes.clipWidth}px`
+          gridTemplateColumns: `${leftCollapsed ? '0px' : `${layoutSizes.leftWidth}px`} auto 1fr auto ${clipCollapsed ? '0px' : `${layoutSizes.clipWidth}px`}`
         } : undefined}
       >
 
         {/* ══ 좌측 패널: 입력 & 컨트롤 ══════════════════════════ */}
-        <aside className="left-panel">
+        <aside className={`left-panel${hasResult && leftCollapsed ? ' panel-collapsed' : ''}`}>
 
           {/* Hero 헤딩 (결과 없을 때만) */}
           {!hasResult && (
@@ -1951,8 +1957,19 @@ function App() {
           )}
         </aside>
 
-        {/* 좌↔우 드래그 핸들 */}
-        {hasResult && <div className="resize-handle resize-handle-v" onMouseDown={handleResizeStart('left')} />}
+        {/* 좌↔우 드래그 핸들 + 접기/펼치기 화살표 */}
+        {hasResult && (
+          <div className={`resize-handle-wrapper resize-handle-wrapper-v${leftCollapsed ? ' collapsed' : ''}`}>
+            <button
+              className="panel-collapse-btn"
+              title={leftCollapsed ? '좌측 패널 열기' : '좌측 패널 접기'}
+              onClick={() => setLeftCollapsed(v => !v)}
+            >
+              {leftCollapsed ? '▶' : '◀'}
+            </button>
+            {!leftCollapsed && <div className="resize-handle resize-handle-v" onMouseDown={handleResizeStart('left')} />}
+          </div>
+        )}
 
         {/* ══ 우측 패널: 결과 ════════════════════════════════════ */}
         <main className="right-panel">
@@ -2609,9 +2626,18 @@ function App() {
         {/* ══ 3번째 패널: 클립 다운로드 ══════════════════════════ */}
         {hasResult && (
           <>
-          {/* 우↔클립 드래그 핸들 */}
-          <div className="resize-handle resize-handle-v" onMouseDown={handleResizeStart('clip')} />
-          <aside className="clip-panel">
+          {/* 우↔클립 드래그 핸들 + 접기/펼치기 화살표 */}
+          <div className={`resize-handle-wrapper resize-handle-wrapper-v${clipCollapsed ? ' collapsed' : ''}`}>
+            {!clipCollapsed && <div className="resize-handle resize-handle-v" onMouseDown={handleResizeStart('clip')} />}
+            <button
+              className="panel-collapse-btn"
+              title={clipCollapsed ? '클립 패널 열기' : '클립 패널 접기'}
+              onClick={() => setClipCollapsed(v => !v)}
+            >
+              {clipCollapsed ? '◀' : '▶'}
+            </button>
+          </div>
+          <aside className={`clip-panel${clipCollapsed ? ' panel-collapsed' : ''}`}>
             <p className="section-label" style={{ marginBottom: '0.25rem', flexShrink: 0 }}>
               <Download style={{ width: 11, height: 11 }} />
               클립 다운로드

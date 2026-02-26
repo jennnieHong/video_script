@@ -181,6 +181,87 @@ h1, h2, h3, h4 {
   width: 100%;
 }
 
+/* 리사이즈 핸들 + 접기/펼치기 버튼 래퍼 */
+.resize-handle-wrapper {
+  position: relative;
+  flex-shrink: 0;
+  z-index: 10;
+}
+
+.resize-handle-wrapper-v {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 14px;
+  height: 100%;
+}
+
+.resize-handle-wrapper-v .resize-handle-v {
+  flex: 1;
+  width: 100%;
+}
+
+/* 패널 접기/펼치기 화살표 버튼 */
+.panel-collapse-btn {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 18px;
+  height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 0.55rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  z-index: 20;
+  transition: background 0.15s, color 0.15s, border-color 0.15s, opacity 0.15s;
+  opacity: 0;
+  line-height: 1;
+}
+
+.resize-handle-wrapper:hover .panel-collapse-btn,
+.panel-collapse-btn:focus-visible {
+  opacity: 1;
+}
+
+.panel-collapse-btn:hover {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+  opacity: 1;
+}
+
+/* 패널 접힌 상태 */
+.panel-collapsed {
+  overflow: hidden !important;
+  width: 0 !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 접힌 상태에서는 화살표 항상 표시 */
+.resize-handle-wrapper.collapsed .panel-collapse-btn {
+  opacity: 1;
+}
+
+/* 좌측 패널이 접혀있으면 left-panel 왼쪽 border도 제거 */
+.left-panel.panel-collapsed {
+  border-right: none;
+}
+
+.clip-panel.panel-collapsed {
+  border-left: none;
+}
+
 /* 드래그 리사이즈 중 iframe이 마우스 이벤트를 가로채지 않도록 차단 */
 body.is-resizing iframe {
   pointer-events: none !important;

@@ -470,8 +470,10 @@ h1, h2, h3, h4 {
   background: var(--surface-1);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  padding: 0.2rem 0.4rem;
+  padding: 0 0.5rem;
   min-width: 0;
+  height: 2.1rem;
+  box-sizing: border-box;
 }
 
 .search-field-inline input {
@@ -579,6 +581,44 @@ h1, h2, h3, h4 {
   border-left-color: var(--brand);
 }
 
+/* 미니 토글 스위치 */
+.toggle-mini {
+  position: relative;
+  width: 30px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.toggle-mini-track {
+  position: absolute;
+  inset: 0;
+  border-radius: 100px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  transition: background 0.15s;
+}
+
+.toggle-mini-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.toggle-mini.active .toggle-mini-track {
+  background: var(--brand);
+  border-color: var(--brand);
+}
+
+.toggle-mini.active .toggle-mini-thumb {
+  transform: translateX(14px);
+  background: white;
+}
+
 .action-bar-title {
   font-size: 0.8125rem;
   font-weight: 600;
@@ -603,6 +643,8 @@ h1, h2, h3, h4 {
   cursor: pointer;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
   white-space: nowrap;
+  min-height: 2.1rem;
+  box-sizing: border-box;
 }
 
 .btn-icon:hover {
@@ -1830,6 +1872,35 @@ input.seg-edit-text:focus {
   max-height: 65vh;             /* 전체 플레이어+컨트 박스가 화면 65% 이내로 */
   overflow-y: auto;             /* 컨트롤이 많아지면 내부 스크롤 */
   flex-shrink: 0;               /* 대본 영역이 밀리지 않게 고정 */
+}
+
+/* 검색 매칭 텍스트 하이라이트 */
+.search-match {
+  background: rgba(251, 191, 36, 0.35);
+  color: #fef3c7;
+  border-radius: 2px;
+  padding: 0 2px;
+  font-weight: 600;
+}
+
+/* 검색 결과 클릭 시 구간 하이라이트 */
+.search-highlight {
+  background: rgba(99, 102, 241, 0.10) !important;
+  border-left: 3px solid var(--brand) !important;
+  transition: background 0.2s;
+}
+
+/* 검색 하이라이트 구간 내 active 강조 억제 */
+.search-highlight.active {
+  background: rgba(99, 102, 241, 0.10) !important;
+}
+
+.search-highlight:first-of-type {
+  border-top-left-radius: var(--radius-sm);
+}
+
+.search-highlight:last-of-type {
+  border-bottom-left-radius: var(--radius-sm);
 }
 
 .loop-controls-panel {

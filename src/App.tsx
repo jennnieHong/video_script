@@ -20,6 +20,30 @@ import axios from 'axios';
 import { romanize } from '@romanize/korean';
 // engToKor: 영어 → 한글 발음 변환
 import { englishToKorean } from './engToKor';
+// fuse.js: 유사 문자열 검색 (오타/띄어쓰기 허용)
+import Fuse from 'fuse.js';
+
+// ─── 한글 자모 분해 (오타/미완성 입력 대응) ─────────────────────────
+const INITIALS = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
+const MEDIALS  = 'ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ';
+const FINALS   = ' ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ';
+
+function decomposeKorean(str: string): string {
+  let result = '';
+  for (const ch of str) {
+    const code = ch.charCodeAt(0);
+    if (code >= 0xAC00 && code <= 0xD7A3) {
+      const offset = code - 0xAC00;
+      result += INITIALS[Math.floor(offset / 588)];
+      result += MEDIALS[Math.floor((offset % 588) / 28)];
+      const fi = offset % 28;
+      if (fi !== 0) result += FINALS[fi];
+    } else {
+      result += ch;
+    }
+  }
+  return result;
+}
 
 // ─── 전역 타입 선언 ────────────────────────────────────────────────
 // YouTube IFrame API는 window.YT 전역 객체를 통해 제공됨
@@ -157,7 +181,7 @@ function LoopPlayer({
 
       playerRef.current = new window.YT.Player(containerRef.current, {
         videoId,
-        host: 'https://www.youtube.com',
+        //host: 'https://www.youtube.com',
         playerVars: {
           start: startRef.current, // 초기 재생 시작 위치 (이후 변경은 ref+interval 처리)
           autoplay: 1,
@@ -266,10 +290,11 @@ interface Segment {
 
 /** 키워드 검색 결과 단위 */
 interface SearchResult {
-  segment: Segment;      // 매칭된 세그먼트 데이터 (클릭 기준 세그먼트)
-  matchIndex: number;    // 오리진 segments[]에서의 인덱스
-  loopStartIdx: number;  // 슬라이딩 윈듀우 히트가 시작되는 세그먼트 인덱스
-  loopEndIdx: number;    // 슬라이딩 윈듀우 히트가 끝나는 세그먼트 인덱스
+  segment: Segment;
+  matchIndex: number;
+  loopStartIdx: number;
+  loopEndIdx: number;
+  score: number;           // 유사도 점수 (0=정확 일치, 높을수록 느슨)
 }
 
 // ─── 대본 저장/불러오기 ─────────────────────────────────────────────
@@ -311,11 +336,15 @@ function App() {
   const [error, setError] = useState('');        // 사용자에게 표시할 에러 메시지
   const [copied, setCopied] = useState(false);   // "복사됨" 피드백 표시 여부 (2초 후 자동 리셋)
 
-  const [searchQuery, setSearchQuery] = useState('');
+  const searchQueryRef = useRef('');
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [showModePanel, setShowModePanel] = useState(false);
   const [showSearchResults, setShowSearchResults] = useState(false);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [fuzzySearch, setFuzzySearch] = useState(true);
+  const [searchRange, setSearchRange] = useState(10);
+  const [fuzzyThreshold, setFuzzyThreshold] = useState(0.3); // 유사도 (0=정확, 1=느슨)
+  const [showSearchOpts, setShowSearchOpts] = useState(false);
 
   // ─── 대본 저장/불러오기 state ────────────────────────────────────
   const savedScriptsRef = useRef<SavedScript[]>(loadAllScripts());
@@ -548,7 +577,7 @@ function App() {
     setError('');
     setTranscript('');
     setSegments([]);
-    setSearchQuery('');
+    searchQueryRef.current = '';
     if (searchInputRef.current) searchInputRef.current.value = '';
     setSearchResults([]);
     setLoopConfig(null);  // 새 영상 검색 시 구간반복 플레이어도 닫음
@@ -691,7 +720,7 @@ function App() {
    */
   const handleSearch = (overrideQuery?: string | any) => {
     const q = typeof overrideQuery === 'string' ? overrideQuery : (searchInputRef.current?.value ?? '');
-    setSearchQuery(q);
+    searchQueryRef.current = q;
     if (!q || !q.trim() || segments.length === 0) {
       setSearchResults([]);
       return;
@@ -700,53 +729,181 @@ function App() {
     const query = q.toLowerCase();
     const results: SearchResult[] = [];
     const addedIndices = new Set<number>();
+    const range = searchRange;
 
-    segments.forEach((segment, index) => {
-      if (addedIndices.has(index)) return;
+    if (fuzzySearch) {
+      // ── 유사 포함 검색 ──
+      // Step 1: 윈도우 생성 (모든 세그먼트 기준 — 정확 매칭용)
+      const windows: { combined: string; decomposed: string; startIdx: number; endIdx: number; centerIdx: number }[] = [];
+      for (let i = 0; i < segments.length; i++) {
+        const start = Math.max(0, i - Math.floor(range / 2));
+        const end = Math.min(segments.length - 1, start + range - 1);
+        const combined = segments.slice(start, end + 1).map(s => s.text).join(' ');
+        windows.push({ combined, decomposed: decomposeKorean(combined), startIdx: start, endIdx: end, centerIdx: i });
+      }
 
-      const prev = segments[index - 1]?.text ?? '';
-      const cur  = segment.text;
-      const next = segments[index + 1]?.text ?? '';
-
-      // 윈도우 파츠: 공백 없는 세그먼트만 포함
-      const parts: { text: string; segIdx: number }[] = [
-        { text: prev, segIdx: index - 1 },
-        { text: cur,  segIdx: index     },
-        { text: next, segIdx: index + 1 },
-      ].filter(p => p.text.length > 0);
-
-      const combined = parts.map(p => p.text).join(' ').toLowerCase();
-      const hitPos   = combined.indexOf(query);
-      if (hitPos === -1) return;
-
-      // 히트 시작/끝 위치가 어느 세그먼트에 속하는지 문자 오프셋으로 계산
-      const hitEnd = hitPos + query.length - 1;
-      let charOffset   = 0;
-      let loopStartIdx = index;
-      let loopEndIdx   = index;
-      let startFound   = false;
-
-      for (const part of parts) {
-        const segEnd     = charOffset + part.text.length - 1;
-        charOffset      += part.text.length + 1; // +1: 세그먼트 사이 공백
-
-        const clamped = Math.max(0, Math.min(segments.length - 1, part.segIdx));
-
-        if (!startFound && hitPos <= segEnd) {
-          loopStartIdx = clamped;
-          startFound   = true;
+      // Step 2: 정확 매칭 우선 — 원본 + 자모 분해 둘 다 시도
+      type ExactHit = { w: typeof windows[0]; hitPos: number; hitLen: number; useDecomposed: boolean };
+      const exactHits: ExactHit[] = [];
+      const queryDecomposed = decomposeKorean(q);
+      for (const w of windows) {
+        let hitPos = w.combined.toLowerCase().indexOf(query);
+        if (hitPos !== -1) {
+          exactHits.push({ w, hitPos, hitLen: query.length, useDecomposed: false });
+        } else {
+          hitPos = w.decomposed.toLowerCase().indexOf(queryDecomposed);
+          if (hitPos !== -1) exactHits.push({ w, hitPos, hitLen: queryDecomposed.length, useDecomposed: true });
         }
-        if (startFound) {
-          loopEndIdx = clamped;
-          if (hitEnd <= segEnd) break; // 히트 끝이 이 세그먼트 안에 있으면 종료
+      }
+      exactHits.sort((a, b) => {
+        const aCenter = (a.useDecomposed ? a.w.decomposed : a.w.combined).length / 2;
+        const bCenter = (b.useDecomposed ? b.w.decomposed : b.w.combined).length / 2;
+        return Math.abs(a.hitPos - aCenter) - Math.abs(b.hitPos - bCenter);
+      });
+      for (const { w, hitPos, hitLen, useDecomposed } of exactHits) {
+        // 히트 위치를 세그먼트 인덱스로 역추적
+        let actualStart = w.startIdx, actualEnd = w.startIdx;
+        let charOff = 0;
+        let startFound = false;
+        const hitEnd = hitPos + hitLen - 1;
+        for (let si = w.startIdx; si <= w.endIdx; si++) {
+          const txt = useDecomposed ? decomposeKorean(segments[si].text) : segments[si].text;
+          const segEnd = charOff + txt.length - 1;
+          if (!startFound && hitPos <= segEnd) { actualStart = si; startFound = true; }
+          if (startFound) { actualEnd = si; if (hitEnd <= segEnd) break; }
+          charOff += txt.length + 1; // +1 공백
+        }
+        // 범위 겹침 체크: 실제 매칭 범위 내 세그먼트가 이미 등록되었으면 건너뜀
+        let overlap = false;
+        for (let si = actualStart; si <= actualEnd; si++) { if (addedIndices.has(si)) { overlap = true; break; } }
+        if (overlap) continue;
+        for (let si = actualStart; si <= actualEnd; si++) addedIndices.add(si);
+        results.push({
+          segment: segments[actualStart],
+          matchIndex: actualStart,
+          loopStartIdx: actualStart,
+          loopEndIdx: actualEnd,
+          score: 0,
+        });
+      }
+
+      // Step 2.5: 단어 포함 매칭 — 쿼리의 모든 단어가 윈도우 안에 존재
+      if (results.length === 0) {
+        const words = q.split(/\s+/).filter(w => w.length > 0);
+        if (words.length >= 2) {
+          const wordsDecomposed = words.map(w => decomposeKorean(w).toLowerCase());
+          type WordHit = { w: typeof windows[0]; matchCount: number };
+          const wordHits: WordHit[] = [];
+
+          for (const w of windows) {
+            if (addedIndices.has(w.centerIdx)) continue;
+            const combinedLower = w.combined.toLowerCase();
+            const decomposedLower = w.decomposed.toLowerCase();
+            let matchCount = 0;
+            for (let wi = 0; wi < words.length; wi++) {
+              if (combinedLower.includes(words[wi].toLowerCase()) ||
+                  decomposedLower.includes(wordsDecomposed[wi])) {
+                matchCount++;
+              }
+            }
+            if (matchCount === words.length) {
+              wordHits.push({ w, matchCount });
+            }
+          }
+
+          // 모든 단어 포함된 윈도우 → 실제 단어가 있는 세그먼트 범위로 좁힘
+          for (const { w } of wordHits) {
+            // 각 세그먼트별로 단어 포함 여부 확인하여 실제 범위 계산
+            let actualStart = w.endIdx, actualEnd = w.startIdx;
+            for (let si = w.startIdx; si <= w.endIdx; si++) {
+              const segLower = segments[si].text.toLowerCase();
+              const segDecomp = decomposeKorean(segments[si].text).toLowerCase();
+              for (let wi = 0; wi < words.length; wi++) {
+                if (segLower.includes(words[wi].toLowerCase()) || segDecomp.includes(wordsDecomposed[wi])) {
+                  actualStart = Math.min(actualStart, si);
+                  actualEnd = Math.max(actualEnd, si);
+                }
+              }
+            }
+            let overlap = false;
+            for (let si = actualStart; si <= actualEnd; si++) { if (addedIndices.has(si)) { overlap = true; break; } }
+            if (overlap) continue;
+            for (let si = actualStart; si <= actualEnd; si++) addedIndices.add(si);
+            results.push({
+              segment: segments[actualStart],
+              matchIndex: actualStart,
+              loopStartIdx: actualStart,
+              loopEndIdx: actualEnd,
+              score: 0.01,
+            });
+          }
         }
       }
 
-      // 히트에 포함된 모든 인덱스를 addedIndices에 등록 (중복 방지)
-      for (let si = loopStartIdx; si <= loopEndIdx; si++) addedIndices.add(si);
+      // Step 3: 정확/단어 매칭 없으면 Fuse fallback (자모 분해 기반)
+      if (results.length === 0) {
+        const fuse = new Fuse(windows, {
+          keys: ['decomposed'],
+          threshold: fuzzyThreshold,
+          distance: 200,
+          includeScore: true,
+          minMatchCharLength: Math.max(2, Math.floor(queryDecomposed.length * 0.5)),
+          ignoreLocation: true,
+        });
 
-      results.push({ segment, matchIndex: index, loopStartIdx, loopEndIdx });
-    });
+        const fuseResults = fuse.search(queryDecomposed);
+
+        for (const fr of fuseResults) {
+          if ((fr.score ?? 1) > fuzzyThreshold + 0.15) continue;
+          const w = fr.item;
+          let overlap = false;
+          for (let si = w.startIdx; si <= w.endIdx; si++) { if (addedIndices.has(si)) { overlap = true; break; } }
+          if (overlap) continue;
+          for (let si = w.startIdx; si <= w.endIdx; si++) addedIndices.add(si);
+          results.push({
+            segment: segments[w.centerIdx],
+            matchIndex: w.centerIdx,
+            loopStartIdx: w.startIdx,
+            loopEndIdx: w.endIdx,
+            score: fr.score ?? 0,
+          });
+        }
+      }
+    } else {
+      // ── 정확 검색: 기존 로직 ──
+      segments.forEach((segment, index) => {
+        if (addedIndices.has(index)) return;
+
+        const halfRange = Math.floor(range / 2);
+        const wStart = Math.max(0, index - halfRange);
+        const wEnd = Math.min(segments.length - 1, index + halfRange);
+        const parts: { text: string; segIdx: number }[] = [];
+        for (let si = wStart; si <= wEnd; si++) {
+          if (segments[si].text.length > 0) parts.push({ text: segments[si].text, segIdx: si });
+        }
+
+        const combined = parts.map(p => p.text).join(' ').toLowerCase();
+        const hitPos = combined.indexOf(query);
+        if (hitPos === -1) return;
+
+        const hitEnd = hitPos + query.length - 1;
+        let charOffset = 0;
+        let loopStartIdx = index;
+        let loopEndIdx = index;
+        let startFound = false;
+
+        for (const part of parts) {
+          const segEnd = charOffset + part.text.length - 1;
+          charOffset += part.text.length + 1;
+          const clamped = Math.max(0, Math.min(segments.length - 1, part.segIdx));
+          if (!startFound && hitPos <= segEnd) { loopStartIdx = clamped; startFound = true; }
+          if (startFound) { loopEndIdx = clamped; if (hitEnd <= segEnd) break; }
+        }
+
+        for (let si = loopStartIdx; si <= loopEndIdx; si++) addedIndices.add(si);
+        results.push({ segment, matchIndex: index, loopStartIdx, loopEndIdx, score: 0 });
+      });
+    }
 
     setSearchResults(results);
   };
@@ -1134,7 +1291,7 @@ function App() {
     const parts = text.split(regex);
     return parts.map((part, i) =>
       regex.test(part)
-        ? <mark key={i} className="search-highlight">{part}</mark>
+        ? <mark key={i} className="search-match">{part}</mark>
         : part
     );
   }, []);
@@ -1197,7 +1354,7 @@ function App() {
               />
               {/* 텍스트: 일반 모드 */}
               <span className="seg-text seg-text-display">
-                {highlightText(seg.text.trim(), searchQuery && searchResults.length > 0 ? searchQuery : '')}
+                {highlightText(seg.text.trim(), searchQueryRef.current && searchResults.length > 0 ? searchQueryRef.current : '')}
               </span>
               {/* 텍스트: 편집 모드 */}
               <input
@@ -1232,7 +1389,7 @@ function App() {
         })}
       </div>
     );
-  }, [segments, searchResults, searchQuery, transcript, handleDragStart, handleDragEnter, handleSegToggle, openYouTubeAtTime, formatTimestamp, highlightText]);
+  }, [segments, searchResults, transcript, handleDragStart, handleDragEnter, handleSegToggle, openYouTubeAtTime, formatTimestamp, highlightText]);
 
   // ─── TXT 파일 다운로드 ────────────────────────────────────────
   /**
@@ -2101,7 +2258,7 @@ function App() {
                       defaultValue=""
                       onChange={(e) => {
                         if (!e.target.value.trim()) {
-                          setSearchQuery('');
+                          searchQueryRef.current = '';
                           setSearchResults([]);
                           setShowSearchResults(false);
                         }
@@ -2117,12 +2274,69 @@ function App() {
                       <Search style={{ width: 10, height: 10 }} />
                     </button>
                   </div>
+                  {/* 검색 옵션 */}
+                  <button
+                    className={`btn-icon${showSearchOpts ? ' active' : ''}`}
+                    onClick={() => setShowSearchOpts(v => !v)}
+                    title="검색 설정"
+                  >
+                    <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                  </button>
+                  <AnimatePresence>
+                    {showSearchOpts && (
+                      <motion.div
+                        key="search-opts"
+                        initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                        transition={{ duration: 0.15 }}
+                        className="floating-panel"
+                        style={{ minWidth: 220, right: 'auto', left: 0 }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)' }}>검색 설정</span>
+                          <button className="floating-close" onClick={() => setShowSearchOpts(false)}>✕</button>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.3rem 0' }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>유사 포함</span>
+                          <div className={`toggle-mini ${fuzzySearch ? 'active' : ''}`} onClick={() => setFuzzySearch(v => !v)}>
+                            <div className="toggle-mini-track" /><div className="toggle-mini-thumb" />
+                          </div>
+                        </div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.3rem 0' }}>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>검색 구간</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                            <button style={{ width: 22, height: 22, borderRadius: 4, border: '1px solid var(--border-strong)', background: 'var(--surface-2)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.7rem' }} onClick={() => setSearchRange(v => Math.max(1, v - 1))}>−</button>
+                            <span style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-primary)', minWidth: 24, textAlign: 'center' }}>{searchRange}</span>
+                            <button style={{ width: 22, height: 22, borderRadius: 4, border: '1px solid var(--border-strong)', background: 'var(--surface-2)', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.7rem' }} onClick={() => setSearchRange(v => Math.min(50, v + 1))}>+</button>
+                          </div>
+                        </div>
+                        {fuzzySearch && (
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.3rem 0' }}>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-secondary)' }}>유사도</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                              <input
+                                type="range" min="0.1" max="0.8" step="0.05"
+                                value={fuzzyThreshold}
+                                onChange={e => setFuzzyThreshold(parseFloat(e.target.value))}
+                                style={{ width: 70, accentColor: 'var(--brand)' }}
+                              />
+                              <span style={{ fontSize: '0.68rem', fontWeight: 600, color: 'var(--text-primary)', minWidth: 28, textAlign: 'right' }}>{fuzzyThreshold.toFixed(2)}</span>
+                            </div>
+                          </div>
+                        )}
+                        <p style={{ fontSize: '0.6rem', color: 'var(--text-muted)', margin: '0.3rem 0 0', lineHeight: 1.4 }}>
+                          {fuzzySearch ? `유사도 ${fuzzyThreshold.toFixed(2)}: 낮을수록 정확, 높을수록 느슨` : '정확 일치 검색'}<br/>
+                          구간: {searchRange}개 세그먼트 범위 내 매칭
+                        </p>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                   {/* 모드 토글 버튼 */}
                   <button
                     className={`btn-icon${showModePanel ? ' active' : ''}`}
                     onClick={() => setShowModePanel(v => !v)}
                     title="클릭 동작 설정"
-                    style={{ fontSize: '0.68rem' }}
                   >
                     {interactionMode === 'search'
                       ? <><Search style={{ width: 11, height: 11 }} /> 검색</>
@@ -2177,7 +2391,7 @@ function App() {
 
                   {/* 검색 결과 플로팅 패널 */}
                   <AnimatePresence>
-                    {showSearchResults && (searchResults.length > 0 || (searchQuery && searchResults.length === 0)) && (
+                    {showSearchResults && (searchResults.length > 0 || (searchQueryRef.current && searchResults.length === 0)) && (
                       <motion.div
                         key="search-results-float"
                         initial={{ opacity: 0, y: -6 }}
@@ -2198,11 +2412,20 @@ function App() {
                             {searchResults.map((result, idx) => (
                               <div
                                 key={`${result.matchIndex}-${idx}`}
-                                onClick={() => openYouTubeAtTime(
-                                  result.matchIndex,
-                                  result.segment.start,
-                                  { startIdx: result.loopStartIdx, endIdx: result.loopEndIdx },
-                                )}
+                                onClick={() => {
+                                  openYouTubeAtTime(
+                                    result.loopStartIdx,
+                                    segments[result.loopStartIdx]?.start ?? result.segment.start,
+                                    { startIdx: result.loopStartIdx, endIdx: result.loopEndIdx },
+                                  );
+                                  // 기존 하이라이트 제거
+                                  segmentRefs.current.forEach(el => el?.classList.remove('search-highlight'));
+                                  // 해당 구간 하이라이트 + 스크롤
+                                  for (let si = result.loopStartIdx; si <= result.loopEndIdx; si++) {
+                                    segmentRefs.current[si]?.classList.add('search-highlight');
+                                  }
+                                  segmentRefs.current[result.loopStartIdx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                                }}
                                 className={`search-result-item${
                                   loopMode && loopConfig &&
                                   loopConfig.matchIndex >= result.loopStartIdx &&
@@ -2210,10 +2433,20 @@ function App() {
                                     ? ' playing' : ''
                                 }`}
                               >
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flex: 1, minWidth: 0 }}>
-                                  <span className="timestamp-badge">{formatTimestamp(result.segment.start)}</span>
-                                  <p className="search-result-text">
-                                    {highlightText(result.segment.text, searchQuery)}
+                                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, gap: '0.15rem' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                    <span className="timestamp-badge">{formatTimestamp(segments[result.loopStartIdx]?.start ?? result.segment.start)}</span>
+                                    <span style={{ fontSize: '0.55rem', color: 'var(--text-muted)' }}>~</span>
+                                    <span className="timestamp-badge">{formatTimestamp(segments[result.loopEndIdx]?.start ?? result.segment.start)}</span>
+                                    <span style={{ fontSize: '0.55rem', color: result.score === 0 ? 'var(--brand-light)' : result.score <= 0.01 ? '#6ee7b7' : 'var(--text-muted)', opacity: 0.8, flexShrink: 0, marginLeft: 'auto' }}>
+                                      {result.score === 0 ? '정확' : result.score <= 0.01 ? '단어' : result.score.toFixed(2)}
+                                    </span>
+                                  </div>
+                                  <p className="search-result-text" style={{ fontSize: '0.68rem', lineHeight: 1.35 }}>
+                                    {highlightText(
+                                      segments.slice(result.loopStartIdx, result.loopEndIdx + 1).map(s => s.text.trim()).join(' '),
+                                      searchQueryRef.current
+                                    )}
                                   </p>
                                 </div>
                                 <button className="btn-result-loop" title="반복 재생"
@@ -2224,14 +2457,23 @@ function App() {
                                     setLoopConfig({ matchIndex: base, startOffset: 0, endOffset });
                                     setInteractionMode('play');
                                     if (playbackOption === 'popup') setPlaybackOption('loop');
+                                    const player = loopPlayerRef.current;
+                                    if (player?.seekTo) { player.seekTo(segments[base]?.start ?? 0, true); player.playVideo(); }
+                                    segmentRefs.current.forEach(el => el?.classList.remove('search-highlight'));
+                                    for (let si = result.loopStartIdx; si <= result.loopEndIdx; si++) segmentRefs.current[si]?.classList.add('search-highlight');
+                                    segmentRefs.current[result.loopStartIdx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
                                   }}>
                                   <RotateCcw style={{ width: 12, height: 12 }} />
                                 </button>
-                                <button className="btn-result-loop" title={`${formatTimestamp(result.segment.start)}부터 재생`}
+                                <button className="btn-result-loop" title={`${formatTimestamp(segments[result.loopStartIdx]?.start ?? result.segment.start)}부터 재생`}
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    const startTime = segments[result.loopStartIdx]?.start ?? result.segment.start;
                                     const player = loopPlayerRef.current;
-                                    if (player?.seekTo) { player.seekTo(result.segment.start, true); player.playVideo(); }
+                                    if (player?.seekTo) { player.seekTo(startTime, true); player.playVideo(); }
+                                    segmentRefs.current.forEach(el => el?.classList.remove('search-highlight'));
+                                    for (let si = result.loopStartIdx; si <= result.loopEndIdx; si++) segmentRefs.current[si]?.classList.add('search-highlight');
+                                    segmentRefs.current[result.loopStartIdx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
                                   }}>
                                   <svg viewBox="0 0 24 24" fill="currentColor" width="12" height="12"><polygon points="5 3 19 12 5 21 5 3"/></svg>
                                 </button>
@@ -2240,7 +2482,7 @@ function App() {
                           </div>
                         ) : (
                           <div style={{ padding: '0.5rem 0', fontSize: '0.75rem', color: 'var(--warning)' }}>
-                            "{searchQuery}" 검색 결과가 없습니다.
+                            "{searchQueryRef.current}" 검색 결과가 없습니다.
                           </div>
                         )}
                       </motion.div>

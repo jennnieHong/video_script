@@ -1391,6 +1391,7 @@ function App() {
               {/* 체크박스 토글 (구간반복 모드에서만 표시 — CSS display로 제어) */}
               <button
                 className="seg-check"
+                onMouseDown={(e) => e.stopPropagation()}
                 onClick={(e) => { e.stopPropagation(); handleSegToggle(i); }}
               />
               {/* 타임스탬프: 일반 모드 */}
@@ -1886,13 +1887,13 @@ function App() {
               <AnimatePresence>
               {playCtrlOpen && (
                 <motion.div key="play-ctrl-body" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => { const next = !isSeekMode; setIsSeekMode(next); if (next) setLoopConfig(null); }}>
+              <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => { const next = !isSeekMode; setIsSeekMode(next); if (next) { setLoopConfig(null); rangeClickRef.current = null; clearRangePins(); } }}>
                 <div className="mode-toggle-info">
                   <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg></span>
                   <div className="mode-toggle-texts"><span className="mode-toggle-title">지점 재생</span><span className="mode-toggle-desc">해당 위치부터 재생</span></div>
                 </div>
                 <div className="toggle">
-                  <input type="checkbox" checked={isSeekMode} onChange={(e) => { e.stopPropagation(); const next = e.target.checked; setIsSeekMode(next); if (next) setLoopConfig(null); }} />
+                  <input type="checkbox" checked={isSeekMode} onChange={(e) => { e.stopPropagation(); const next = e.target.checked; setIsSeekMode(next); if (next) { setLoopConfig(null); rangeClickRef.current = null; clearRangePins(); } }} />
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>

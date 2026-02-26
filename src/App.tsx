@@ -10,6 +10,7 @@
 // ============================================================
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 // lucide-react: 아이콘 라이브러리
 import { Youtube, Send, Copy, Download, Loader2, FileText, CheckCircle2, Search, Clock, RotateCcw } from 'lucide-react';
 // framer-motion: 애니메이션(페이드인, 슬라이드 등)
@@ -592,7 +593,13 @@ function App() {
   const [showScriptsPanel, setShowScriptsPanel] = useState(false);
   const scriptTitleRef = useRef<HTMLInputElement>(null);
   const [activeScriptId, setActiveScriptId] = useState<string | null>(null);
-  const [isEditMode, setIsEditMode] = useState(false);
+  const isEditModeRef = useRef(false);
+  const editBtnRef = useRef<HTMLButtonElement>(null);
+  const toggleEditMode = useCallback(() => {
+    isEditModeRef.current = !isEditModeRef.current;
+    transcriptScrollRef.current?.classList.toggle('edit-mode', isEditModeRef.current);
+    editBtnRef.current?.classList.toggle('active', isEditModeRef.current);
+  }, []);
   const [, forceScriptsUpdate] = useState(0); // 패널 목록 갱신용
 
   const handleSaveScript = () => {
@@ -1426,9 +1433,8 @@ function App() {
             const scrollRect = scrollEl.getBoundingClientRect();
             const inView = segRect.top >= scrollRect.top && segRect.bottom <= scrollRect.bottom;
             if (!inView) {
-              // 뷰포트 밖일 때만 scrollIntoView 호출 (이미 보이면 그냥 둠)
               programmaticScrollRef.current = true;
-              segEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+              virtualizer.scrollToIndex(found, { align: 'auto', behavior: 'smooth' });
               setTimeout(() => { programmaticScrollRef.current = false; }, 200);
             }
           }
@@ -1611,102 +1617,16 @@ function App() {
     );
   }, []);
 
-  // ─── 대본 렌더링 메모이제이션 ───────────────────────────
-  // useMemo를 상위 레벨로 이동하여 Hook 규칙 준수 및 타이핑 지연 해결
-  const renderedSegments = useMemo(() => {
-    if (segments.length === 0) return <p className="transcript-text">{transcript}</p>;
-    return (
-      <div className="transcript-segments">
-        {segments.map((seg, i) => {
-          const isHit     = searchResults.some(r => r.matchIndex === i);
-          return (
-            <div
-              key={i}
-              ref={el => { segmentRefs.current[i] = el; }}
-              className={[
-                'transcript-seg',
-                isHit                  ? 'hit'      : '',
-              ].join(' ').trim()}
-              onMouseDown={() => { if (!isSeekModeRef.current) handleDragStart(i); }}
-              onMouseEnter={() => { if (!isSeekModeRef.current) handleDragEnter(i); }}
-              onClick={() => {
-                if (!isSeekModeRef.current) return;
-                setLoopConfig(null);
-                setReEnableTrigger(v => v + 1);  // 지점재생 시 자동스크롤 재활성화 트리거
-                const player = loopPlayerRef.current;
-                if (player?.seekTo) {
-                  player.seekTo(seg.start, true);
-                  player.playVideo();
-                }
-              }}
-            >
-              {/* 체크박스 토글 (구간반복 모드에서만 표시 — CSS display로 제어) */}
-              <button
-                className="seg-check"
-                onMouseDown={(e) => e.stopPropagation()}
-                onClick={(e) => { e.stopPropagation(); handleSegToggle(i); }}
-              />
-              {/* 타임스탬프: 일반 모드 */}
-              <button
-                className="seg-timestamp seg-time-display"
-                onClick={(e) => { if (isSeekModeRef.current) e.stopPropagation(); openYouTubeAtTime(i, seg.start); }}
-                title={loopMode ? '클릭 → 이 세그먼트 재생' : '클릭 → YouTube에서 열기'}
-              >
-                {formatTimestamp(seg.start)}
-              </button>
-              {/* 타임스탬프: 편집 모드 */}
-              <input
-                className="seg-timestamp seg-edit-time"
-                type="text"
-                defaultValue={seg.start.toFixed(2)}
-                onBlur={(e) => {
-                  const v = parseFloat(e.target.value);
-                  if (!isNaN(v) && v !== seg.start) {
-                    setSegments(prev => prev.map((s, j) => j === i ? { ...s, start: v } : s));
-                  }
-                }}
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-                title="시작 시간 (초)"
-              />
-              {/* 텍스트: 일반 모드 */}
-              <span className="seg-text seg-text-display">
-                {highlightText(seg.text.trim(), searchQueryRef.current && searchResults.length > 0 ? searchQueryRef.current : '')}
-              </span>
-              {/* 텍스트: 편집 모드 */}
-              <input
-                className="seg-text seg-edit-text"
-                type="text"
-                defaultValue={seg.text.trim()}
-                onBlur={(e) => {
-                  const v = e.target.value;
-                  if (v !== seg.text) {
-                    setSegments(prev => prev.map((s, j) => j === i ? { ...s, text: v } : s));
-                  }
-                }}
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-              />
-              {/* 발음 자막 입력 — CSS display로 제어 */}
-              <input
-                className="seg-translation"
-                type="text"
-                placeholder="발음 입력..."
-                defaultValue={translations[i] || ''}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  translationsRef.current = { ...translationsRef.current, [i]: val };
-                  setTranslations(prev => ({ ...prev, [i]: val }));
-                }}
-                onClick={(e) => e.stopPropagation()}
-                onMouseDown={(e) => e.stopPropagation()}
-              />
-            </div>
-          );
-        })}
-      </div>
-    );
-  }, [segments, searchResults, transcript, handleDragStart, handleDragEnter, handleSegToggle, openYouTubeAtTime, formatTimestamp, highlightText]);
+  // ─── 가상 스크롤 (Virtual Scroll) ───────────────────────────
+  const virtualizer = useVirtualizer({
+    count: segments.length,
+    getScrollElement: () => transcriptScrollRef.current,
+    estimateSize: () => 38, // min-height 2.4rem ≈ 38px
+    overscan: 10,
+  });
+
+  // 히트 인덱스 Set (검색결과 빠른 조회)
+  const hitSet = useMemo(() => new Set(searchResults.map(r => r.matchIndex)), [searchResults]);
 
   // ─── TXT 파일 다운로드 ────────────────────────────────────────
   /**
@@ -2361,8 +2281,9 @@ function App() {
                   )}
                 </span>
                 <button
-                  className={`btn-icon${isEditMode ? ' active' : ''}`}
-                  onClick={() => setIsEditMode(v => !v)}
+                  ref={editBtnRef}
+                  className="btn-icon"
+                  onClick={toggleEditMode}
                   title="세그먼트 편집 모드"
                   disabled={segments.length === 0}
                 >
@@ -2922,12 +2843,111 @@ function App() {
               {/* 자막 — 세그먼트별 렌더링 (하이라이트 + 재생 위치 추적) */}
               <div 
                 ref={transcriptScrollRef}
-                className={`transcript-scroll${isDragMode ? ' drag-mode' : ''}${isSeekMode ? ' seek-mode' : ''}${loopMode ? ' loop-mode' : ''}${showTranslation ? ' show-translation' : ''}${isEditMode ? ' edit-mode' : ''}`}
+                className={`transcript-scroll${isDragMode ? ' drag-mode' : ''}${isSeekMode ? ' seek-mode' : ''}${loopMode ? ' loop-mode' : ''}${showTranslation ? ' show-translation' : ''}`}
                 onMouseUp={handleDragEnd}
                 onMouseLeave={handleDragEnd}
                 onWheel={handleTranscriptWheel}
               >
-                {renderedSegments}
+                {segments.length === 0 ? (
+                  <p className="transcript-text">{transcript}</p>
+                ) : (
+                  <div
+                    className="transcript-segments"
+                    style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}
+                  >
+                    {virtualizer.getVirtualItems().map(virtualRow => {
+                      const i = virtualRow.index;
+                      const seg = segments[i];
+                      const isHit = hitSet.has(i);
+                      return (
+                        <div
+                          key={i}
+                          ref={(el) => {
+                            segmentRefs.current[i] = el;
+                            virtualizer.measureElement(el);
+                          }}
+                          data-index={i}
+                          className={`transcript-seg${isHit ? ' hit' : ''}`}
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            width: '100%',
+                            transform: `translateY(${virtualRow.start}px)`,
+                          }}
+                          onMouseDown={() => { if (!isSeekModeRef.current) handleDragStart(i); }}
+                          onMouseEnter={() => { if (!isSeekModeRef.current) handleDragEnter(i); }}
+                          onClick={() => {
+                            if (!isSeekModeRef.current) return;
+                            setLoopConfig(null);
+                            setReEnableTrigger(v => v + 1);
+                            const player = loopPlayerRef.current;
+                            if (player?.seekTo) {
+                              player.seekTo(seg.start, true);
+                              player.playVideo();
+                            }
+                          }}
+                        >
+                          <button
+                            className="seg-check"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => { e.stopPropagation(); handleSegToggle(i); }}
+                          />
+                          <button
+                            className="seg-timestamp seg-time-display"
+                            onClick={(e) => { if (isSeekModeRef.current) e.stopPropagation(); openYouTubeAtTime(i, seg.start); }}
+                            title={loopMode ? '클릭 → 이 세그먼트 재생' : '클릭 → YouTube에서 열기'}
+                          >
+                            {formatTimestamp(seg.start)}
+                          </button>
+                          <input
+                            className="seg-timestamp seg-edit-time"
+                            type="text"
+                            defaultValue={seg.start.toFixed(2)}
+                            onBlur={(e) => {
+                              const v = parseFloat(e.target.value);
+                              if (!isNaN(v) && v !== seg.start) {
+                                setSegments(prev => prev.map((s, j) => j === i ? { ...s, start: v } : s));
+                              }
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            onMouseDown={(e) => e.stopPropagation()}
+                            title="시작 시간 (초)"
+                          />
+                          <span className="seg-text seg-text-display">
+                            {highlightText(seg.text.trim(), searchQueryRef.current && searchResults.length > 0 ? searchQueryRef.current : '')}
+                          </span>
+                          <input
+                            className="seg-text seg-edit-text"
+                            type="text"
+                            defaultValue={seg.text.trim()}
+                            onBlur={(e) => {
+                              const v = e.target.value;
+                              if (v !== seg.text) {
+                                setSegments(prev => prev.map((s, j) => j === i ? { ...s, text: v } : s));
+                              }
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            onMouseDown={(e) => e.stopPropagation()}
+                          />
+                          <input
+                            className="seg-translation"
+                            type="text"
+                            placeholder="발음 입력..."
+                            defaultValue={translations[i] || ''}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              translationsRef.current = { ...translationsRef.current, [i]: val };
+                              setTranslations(prev => ({ ...prev, [i]: val }));
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            onMouseDown={(e) => e.stopPropagation()}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
 
             </motion.div>

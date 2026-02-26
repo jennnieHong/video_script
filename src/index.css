@@ -1737,15 +1737,24 @@ body.is-resizing iframe {
 }
 
 .transcript-seg {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto auto 1fr auto; /* check | timestamp | text | translation */
   align-items: center;
   gap: 0.5rem;
   padding: 0.45rem 0.5rem;
   border-radius: var(--radius-sm);
   transition: background 0.12s;
   border-left: 2px solid transparent;
-  min-height: 2.4rem; /* 편집 모드 전환 시 높이 고정 */
+  min-height: 2.4rem;
 }
+
+/* Grid 위치: display와 edit 요소를 같은 셀에 겹침 */
+.seg-check         { grid-column: 1; grid-row: 1; }
+.seg-time-display  { grid-column: 2; grid-row: 1; }
+.seg-edit-time     { grid-column: 2; grid-row: 1; }
+.seg-text-display  { grid-column: 3; grid-row: 1; }
+.seg-edit-text     { grid-column: 3; grid-row: 1; }
+.seg-translation   { grid-column: 4; grid-row: 1; }
 
 .transcript-seg:hover {
   background: var(--surface-1);
@@ -1916,10 +1925,13 @@ body.is-resizing iframe {
   background: rgba(99, 102, 241, 0.1);
   border: 1px solid rgba(99, 102, 241, 0.25);
   border-radius: 5px;
-  padding: 0.15rem 0.45rem;
+  padding: 0 0.45rem;
+  height: 1.6rem;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
   cursor: pointer;
   white-space: nowrap;
-  line-height: 1.4;
   transition: background 0.15s, color 0.15s;
 }
 
@@ -1931,8 +1943,12 @@ body.is-resizing iframe {
 .seg-text {
   font-size: 0.875rem;
   color: var(--text-secondary);
-  line-height: 1.65;
+  line-height: 1.6rem;
+  height: 1.6rem;
+  display: inline-flex;
+  align-items: center;
   word-break: break-word;
+  overflow: hidden;
 }
 
 /* 세그먼트 편집 모드 — 높이를 일반 모드와 동일하게 유지 */
@@ -1978,20 +1994,23 @@ input.seg-edit-text:focus {
   border-color: var(--brand);
 }
 
-/* 편집 모드 표시/숨김 제어 — 부모 .edit-mode 클래스 기반 */
+/* 편집 모드 표시/숨김 — visibility 전환 (layout reflow 없음) */
 .seg-edit-time,
 .seg-edit-text {
-  display: none;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .edit-mode .seg-edit-time,
 .edit-mode .seg-edit-text {
-  display: inline-flex;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .edit-mode .seg-time-display,
 .edit-mode .seg-text-display {
-  display: none;
+  visibility: hidden;
+  pointer-events: none;
 }
 
 /* ─── Search keyword highlight ───────────────────────────── */

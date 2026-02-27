@@ -2411,3 +2411,37 @@ input.seg-edit-text:focus {
   pointer-events: none;
   white-space: nowrap;
 }
+
+/* ── 편집 설정 드롭다운 ── */
+.edit-settings-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 170px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+  padding: 0.35rem 0;
+  z-index: 100;
+}
+.edit-settings-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.1s;
+}
+.edit-settings-item:hover {
+  background: var(--surface-3);
+}
+.edit-settings-item input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}

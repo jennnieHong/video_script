@@ -611,6 +611,8 @@ function App() {
   const [activeScriptId, setActiveScriptId] = useState<string | null>(null); // 현재 편집/로드 중인 대본 ID (null = 새 대본)
   const isEditModeRef = useRef(false);                                     // 편집모드 동기 참조 (이벤트 핸들러 내에서 즉시 읽기용)
   const [isEditMode, setIsEditMode] = useState(false);                     // 자막 편집 모드 ON/OFF (타임스탬프·텍스트 직접 수정 가능)
+  const [wrapEditNav, setWrapEditNav] = useState(false);                   // 편집 처음↔끝 순환 이동
+  const [showEditSettings, setShowEditSettings] = useState(false);         // 편집 설정 드롭다운
   const editBtnRef = useRef<HTMLButtonElement>(null);                       // 편집 버튼 DOM ref (active 클래스 직접 토글)
   const toggleEditMode = useCallback(() => {
     isEditModeRef.current = !isEditModeRef.current;
@@ -626,6 +628,7 @@ function App() {
     } else {
       // 편집모드 종료 → version 증가로 defaultValue 갱신
       setSegmentsVersion(v => v + 1);
+      setShowEditSettings(false);
       showToast('✅ 편집 완료');
     }
   }, [segments, showToast]);
@@ -1734,6 +1737,31 @@ function App() {
     return () => document.removeEventListener('mousedown', handler);
   }, [showSaveOptions]);
 
+  // ─── 편집 설정 드롭다운 외부 클릭 시 닫기 ────────────────────
+  const editSettingsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showEditSettings) return;
+    const handler = (e: MouseEvent) => {
+      if (editSettingsRef.current && !editSettingsRef.current.contains(e.target as Node)) {
+        setShowEditSettings(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showEditSettings]);
+
+  // ─── 검색 설정 드롭다운 외부 클릭 시 닫기 ────────────────────
+  const searchOptsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!showSearchOpts) return;
+    const handler = (e: MouseEvent) => {
+      if (searchOptsRef.current && !searchOptsRef.current.contains(e.target as Node)) {
+        setShowSearchOpts(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showSearchOpts]);
   // ─── 검색어 키워드 하이라이트 헬퍼 ───────────────────────────
   // text를 query 기준으로 분리하여 <mark>로 감싼 React 노드 배열로 반환
   const highlightText = useCallback((text: string, query: string): React.ReactNode => {
@@ -1754,6 +1782,82 @@ function App() {
     estimateSize: () => 38, // min-height 2.4rem ≈ 38px
     overscan: 10,
   });
+
+  // ─── 편집 모드: 키보드 네비게이션 ─────────────────────────────
+  /** 특정 세그먼트의 편집 input으로 포커스 이동 (가상 스크롤 대응) */
+  const focusEditInput = useCallback((targetSegIdx: number, cursorPos: number) => {
+    const scrollIdx = displaySegMap ? displaySegMap.indexOf(targetSegIdx) : targetSegIdx;
+    if (scrollIdx < 0) return;
+    virtualizer.scrollToIndex(scrollIdx, { align: 'center', behavior: 'auto' });
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        const row = document.querySelector(`[data-index="${targetSegIdx}"]`);
+        const input = row?.querySelector('.seg-edit-text') as HTMLInputElement | null;
+        if (input) {
+          input.focus();
+          const pos = Math.min(cursorPos, input.value.length);
+          input.setSelectionRange(pos, pos);
+        }
+      }, 60);
+    });
+  }, [displaySegMap, virtualizer]);
+
+  /** 편집 input 키보드 핸들러: Enter(분리), Delete(병합), ↑↓(이동) */
+  const handleEditKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>, i: number) => {
+    const input = e.currentTarget;
+    const cursorPos = input.selectionStart ?? 0;
+    const selEnd = input.selectionEnd ?? cursorPos;
+    const textLen = input.value.length;
+    const total = segments.length;
+
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (i >= total - 1) return;
+      const before = input.value.substring(0, cursorPos);
+      const after = input.value.substring(selEnd).trim();
+      setSegments(prev => prev.map((s, j) => {
+        if (j === i) return { ...s, text: before };
+        if (j === i + 1) return { ...s, text: after + (after && s.text.trim() ? ' ' : '') + s.text.trim() };
+        return s;
+      }));
+      setSegmentsVersion(v => v + 1);
+      focusEditInput(i + 1, 0);
+    } else if (e.key === 'Delete' && cursorPos === textLen && cursorPos === selEnd) {
+      e.preventDefault();
+      if (i >= total - 1) return;
+      const nextText = segments[i + 1].text.trim();
+      setSegments(prev => prev.map((s, j) => {
+        if (j === i) return { ...s, text: input.value + (nextText ? ' ' + nextText : '') };
+        if (j === i + 1) return { ...s, text: '' };
+        return s;
+      }));
+      setSegmentsVersion(v => v + 1);
+      focusEditInput(i, cursorPos);
+    } else if (e.key === 'Backspace' && cursorPos === 0 && cursorPos === selEnd) {
+      e.preventDefault();
+      if (i <= 0) return; // 첫 번째 세그먼트
+      const prevText = segments[i - 1].text.trim();
+      const curText = input.value.trim();
+      const newPrevLen = prevText.length; // 이전 텍스트 끝 = 새 커서 위치
+      setSegments(prev => prev.map((s, j) => {
+        if (j === i - 1) return { ...s, text: prevText + (prevText && curText ? ' ' : '') + curText };
+        if (j === i) return { ...s, text: '' };
+        return s;
+      }));
+      setSegmentsVersion(v => v + 1);
+      focusEditInput(i - 1, prevText ? newPrevLen + 1 : 0);
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      let target = i - 1;
+      if (target < 0) target = wrapEditNav ? total - 1 : -1;
+      if (target >= 0) focusEditInput(target, cursorPos);
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      let target = i + 1;
+      if (target >= total) target = wrapEditNav ? 0 : -1;
+      if (target >= 0) focusEditInput(target, cursorPos);
+    }
+  }, [segments, wrapEditNav, focusEditInput]);
 
   // 히트 인덱스 Set (검색결과 빠른 조회)
   const hitSet = useMemo(() => new Set(searchResults.map(r => r.matchIndex)), [searchResults]);
@@ -2571,6 +2675,7 @@ function App() {
                   편집
                 </button>
                 {isEditMode && (
+                  <>
                   <button
                     className="btn-icon"
                     onClick={() => {
@@ -2586,6 +2691,27 @@ function App() {
                     </svg>
                     되돌리기
                   </button>
+                  <div ref={editSettingsRef} style={{ position: 'relative' }}>
+                    <button
+                      className={`btn-icon${showEditSettings ? ' active' : ''}`}
+                      onClick={() => setShowEditSettings(v => !v)}
+                      title="편집 설정"
+                    >
+                      <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                      </svg>
+                    </button>
+                    {showEditSettings && (
+                      <div className="edit-settings-dropdown">
+                        <label className="edit-settings-item" onClick={() => setWrapEditNav(v => !v)}>
+                          <input type="checkbox" checked={wrapEditNav} readOnly />
+                          <span>처음↔끝 순환 이동</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                  </>
                 )}
                 <button
                   className={`btn-icon${copied ? ' success' : ''}`}
@@ -2913,6 +3039,7 @@ function App() {
                     </button>
                   </div>
                   {/* 검색 옵션 */}
+                  <div ref={searchOptsRef} style={{ position: 'relative' }}>
                   <button
                     className={`btn-icon${showSearchOpts ? ' active' : ''}`}
                     onClick={() => setShowSearchOpts(v => !v)}
@@ -2982,6 +3109,7 @@ function App() {
                       </motion.div>
                     )}
                   </AnimatePresence>
+                  </div>
                   {/* 모드 토글 버튼 */}
                   <button
                     className={`btn-icon${showModePanel ? ' active' : ''}`}
@@ -3275,6 +3403,7 @@ function App() {
                             className="seg-text seg-edit-text"
                             type="text"
                             defaultValue={seg.text.trim()}
+                            onKeyDown={(e) => handleEditKeyDown(e, i)}
                             onBlur={(e) => {
                               const v = e.target.value;
                               if (v !== seg.text) {

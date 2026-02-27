@@ -340,9 +340,19 @@ function App() {
   const [loading, setLoading] = useState(false); // 백엔드 요청 진행 중 여부 (로딩 스피너 제어)
   const [transcript, setTranscript] = useState(''); // 추출된 전체 자막 텍스트 (평문)
   const [segments, setSegments] = useState<Segment[]>([]); // 타임스탬프별 세그먼트 배열
+  const originalSegmentsRef = useRef<Segment[]>([]);        // API에서 가져온 원본 대본 (되돌리기용)
+  const editSnapshotRef = useRef<Segment[]>([]);             // 편집 모드 진입 시 스냅샷 (편집 취소용)
+  const [segmentsVersion, setSegmentsVersion] = useState(0); // defaultValue 갱신을 위한 key 카운터
   const [videoId, setVideoId] = useState('');   // YouTube 영상 ID (URL에서 파싱, 링크 생성에 사용)
   const [error, setError] = useState('');        // 사용자에게 표시할 에러 메시지
   const [copied, setCopied] = useState(false);   // "복사됨" 피드백 표시 여부 (2초 후 자동 리셋)
+  const [toastMessage, setToastMessage] = useState(''); // 토스트 메시지 (빈 문자열이면 숨김)
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const showToast = useCallback((msg: string, ms = 2000) => {
+    clearTimeout(toastTimerRef.current);
+    setToastMessage(msg);
+    toastTimerRef.current = setTimeout(() => setToastMessage(''), ms);
+  }, []);
 
   const searchQueryRef = useRef('');  // 현재 검색어 (리렌더 없이 빠르게 참조)
   const searchInputRef = useRef<HTMLInputElement>(null);  // 검색 입력 필드 DOM ref
@@ -605,15 +615,26 @@ function App() {
   const toggleEditMode = useCallback(() => {
     isEditModeRef.current = !isEditModeRef.current;
     setIsEditMode(isEditModeRef.current);
-    transcriptScrollRef.current?.classList.toggle('edit-mode', isEditModeRef.current);
     editBtnRef.current?.classList.toggle('active', isEditModeRef.current);
-    // 편집모드 진입 시 자동스크롤 OFF + 구간 설정 핀 초기화
     if (isEditModeRef.current) {
+      // 편집모드 진입 → 스냅샷 저장 + 자동스크롤 OFF
+      editSnapshotRef.current = [...segments];
       setIsAutoScroll(false);
       isAutoScrollRef.current = false;
       rangeClickRef.current = null;
       clearRangePins();
+    } else {
+      // 편집모드 종료 → version 증가로 defaultValue 갱신
+      setSegmentsVersion(v => v + 1);
+      showToast('✅ 편집 완료');
     }
+  }, [segments, showToast]);
+
+  /** 편집 되돌리기: 편집 모드 진입 시점의 상태로 복원 */
+  const revertEdits = useCallback(() => {
+    if (editSnapshotRef.current.length === 0) return;
+    setSegments(editSnapshotRef.current);
+    setSegmentsVersion(v => v + 1); // defaultValue 강제 갱신
   }, []);
   const [, forceScriptsUpdate] = useState(0); // 패널 목록 갱신용
 
@@ -943,7 +964,9 @@ function App() {
 
       // 정상 응답: 자막 데이터 저장
       setTranscript(data.transcript);          // 전체 평문 자막
-      setSegments(data.segments || []);        // 타임스탬프 포함 세그먼트 배열
+      const fetchedSegs = data.segments || [];
+      setSegments(fetchedSegs);                // 타임스탬프 포함 세그먼트 배열
+      originalSegmentsRef.current = fetchedSegs; // 원본 보관
       setVideoId(data.video_id || '');         // 영상 ID (링크/파일명에 사용)
       console.log('✅ 추출 완료!', data.segments?.length, '개의 세그먼트');
 
@@ -1874,6 +1897,13 @@ function App() {
   const handleSrtUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // 현재 대본이 있으면 덮어쓰기 확인
+    if (segments.length > 0) {
+      if (!confirm('현재 대본이 SRT 파일 내용으로 덮어써집니다. 계속하시겠습니까?')) {
+        e.target.value = '';
+        return;
+      }
+    }
     const reader = new FileReader();
     reader.onload = () => {
       const text = reader.result as string;
@@ -1886,6 +1916,7 @@ function App() {
       setTranscript(parsed.map(s => s.text).join(' '));
       setTranslations({});
       translationsRef.current = {};
+      setSegmentsVersion(v => v + 1); // 편집 필드 defaultValue 갱신
     };
     reader.readAsText(file, 'utf-8');
     e.target.value = '';
@@ -2539,6 +2570,23 @@ function App() {
                   <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                   편집
                 </button>
+                {isEditMode && (
+                  <button
+                    className="btn-icon"
+                    onClick={() => {
+                      if (confirm('편집 내용을 되돌리시겠습니까? 편집 모드 진입 시점으로 복원됩니다.')) {
+                        revertEdits();
+                      }
+                    }}
+                    title="편집 되돌리기 (편집 모드 진입 시점으로)"
+                  >
+                    <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polyline points="1 4 1 10 7 10"/>
+                      <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+                    </svg>
+                    되돌리기
+                  </button>
+                )}
                 <button
                   className={`btn-icon${copied ? ' success' : ''}`}
                   onClick={copyToClipboard}
@@ -3111,7 +3159,7 @@ function App() {
               {/* 자막 — 세그먼트별 렌더링 (하이라이트 + 재생 위치 추적) */}
               <div 
                 ref={transcriptScrollRef}
-                className={`transcript-scroll${isDragMode ? ' drag-mode' : ''}${isSeekMode ? ' seek-mode' : ''}${loopMode ? ' loop-mode' : ''}${showTranslation ? ' show-translation' : ''}`}
+                className={`transcript-scroll${isDragMode ? ' drag-mode' : ''}${isSeekMode ? ' seek-mode' : ''}${loopMode ? ' loop-mode' : ''}${showTranslation ? ' show-translation' : ''}${isEditMode ? ' edit-mode' : ''}`}
                 onMouseUp={handleDragEnd}
                 onMouseLeave={handleDragEnd}
                 onWheel={handleTranscriptWheel}
@@ -3205,6 +3253,7 @@ function App() {
                             {formatTimestamp(seg.start)}
                           </button>
                           <input
+                            key={`time-${i}-${segmentsVersion}`}
                             className="seg-timestamp seg-edit-time"
                             type="text"
                             defaultValue={seg.start.toFixed(2)}
@@ -3222,6 +3271,7 @@ function App() {
                             {highlightText(seg.text.trim(), searchQueryRef.current && searchResults.length > 0 ? searchQueryRef.current : '')}
                           </span>
                           <input
+                            key={`text-${i}-${segmentsVersion}`}
                             className="seg-text seg-edit-text"
                             type="text"
                             defaultValue={seg.text.trim()}
@@ -3431,6 +3481,20 @@ function App() {
           </>
         )}
       </div>
+      {/* ── 토스트 메시지 ── */}
+      <AnimatePresence>
+        {toastMessage && (
+          <motion.div
+            className="toast-message"
+            initial={{ opacity: 0, y: 30 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 30 }}
+            transition={{ duration: 0.2 }}
+          >
+            {toastMessage}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -2392,3 +2392,22 @@ input.seg-edit-text:focus {
 .floating-resize:hover {
   background: rgba(99, 102, 241, 0.2);
 }
+
+/* ── 토스트 메시지 ── */
+.toast-message {
+  position: fixed;
+  bottom: 2rem;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 0.6rem 1.4rem;
+  background: rgba(30, 30, 40, 0.88);
+  backdrop-filter: blur(12px);
+  color: #e8e8f0;
+  font-size: 0.82rem;
+  font-weight: 500;
+  border-radius: 0.6rem;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+  z-index: 9999;
+  pointer-events: none;
+  white-space: nowrap;
+}

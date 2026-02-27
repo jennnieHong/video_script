@@ -594,11 +594,20 @@ function App() {
   const scriptTitleRef = useRef<HTMLInputElement>(null);
   const [activeScriptId, setActiveScriptId] = useState<string | null>(null);
   const isEditModeRef = useRef(false);
+  const [isEditMode, setIsEditMode] = useState(false);
   const editBtnRef = useRef<HTMLButtonElement>(null);
   const toggleEditMode = useCallback(() => {
     isEditModeRef.current = !isEditModeRef.current;
+    setIsEditMode(isEditModeRef.current);
     transcriptScrollRef.current?.classList.toggle('edit-mode', isEditModeRef.current);
     editBtnRef.current?.classList.toggle('active', isEditModeRef.current);
+    // 편집모드 진입 시 자동스크롤 OFF + 구간 설정 핀 초기화
+    if (isEditModeRef.current) {
+      setIsAutoScroll(false);
+      isAutoScrollRef.current = false;
+      rangeClickRef.current = null;
+      clearRangePins();
+    }
   }, []);
   const [, forceScriptsUpdate] = useState(0); // 패널 목록 갱신용
 
@@ -775,7 +784,7 @@ function App() {
 
   // loopConfig 변경 OR 지점재생 클릭 시 자동 스크롤 재활성화
   useEffect(() => {
-    if (reEnableTrigger > 0 && autoScrollReEnableRef.current && !isAutoScrollRef.current) {
+    if (reEnableTrigger > 0 && autoScrollReEnableRef.current && !isAutoScrollRef.current && !isEditModeRef.current) {
       // 이전 재생 위치로 되돌아가지 않도록 잠시 scrollIntoView 억제
       userScrollingRef.current = true;
       isAutoScrollRef.current = true;
@@ -1289,7 +1298,7 @@ function App() {
 
   /** 드래그 선택 이벤트 핸들러 */
   const handleDragStart = useCallback((idx: number) => {
-    if (!isDragModeRef.current || isSeekModeRef.current) return;
+    if (!isDragModeRef.current || isSeekModeRef.current || isEditModeRef.current) return;
     dragStartIdxRef.current   = idx;
     dragCurrentIdxRef.current = idx;
     setDragStartIdx(idx);
@@ -2059,23 +2068,23 @@ function App() {
               <AnimatePresence>
               {playCtrlOpen && (
                 <motion.div key="play-ctrl-body" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => { const next = !isSeekMode; setIsSeekMode(next); if (next) { setLoopConfig(null); rangeClickRef.current = null; clearRangePins(); } }}>
+              <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => { const next = !isSeekMode; setIsSeekMode(next); if (next) { rangeClickRef.current = null; clearRangePins(); setIsDragMode(false); } }}>
                 <div className="mode-toggle-info">
                   <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg></span>
                   <div className="mode-toggle-texts"><span className="mode-toggle-title">지점 재생</span><span className="mode-toggle-desc">해당 위치부터 재생</span></div>
                 </div>
                 <div className="toggle">
-                  <input type="checkbox" checked={isSeekMode} onChange={(e) => { e.stopPropagation(); const next = e.target.checked; setIsSeekMode(next); if (next) { setLoopConfig(null); rangeClickRef.current = null; clearRangePins(); } }} />
+                  <input type="checkbox" checked={isSeekMode} onChange={(e) => { e.stopPropagation(); const next = e.target.checked; setIsSeekMode(next); if (next) { rangeClickRef.current = null; clearRangePins(); setIsDragMode(false); } }} />
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>
-              <div className={`mode-toggle-bar ${isDragMode ? 'active' : ''}`} onClick={() => { setIsDragMode(v => { if (v) { rangeClickRef.current = null; } return !v; }); }}>
+              <div className={`mode-toggle-bar ${isDragMode ? 'active' : ''}${isSeekMode ? ' disabled' : ''}`} onClick={() => { if (isSeekMode) return; setIsDragMode(v => { if (v) { rangeClickRef.current = null; } return !v; }); }} style={isSeekMode ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
                 <div className="mode-toggle-info">
                   <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-2 2-2-2"/><path d="M15 6l-2-2-2 2"/><path d="M18 15l2-2-2-2"/><path d="M6 15l-2-2 2-2"/></svg></span>
-                  <div className="mode-toggle-texts"><span className="mode-toggle-title">구간 재생</span><span className="mode-toggle-desc">클릭/드래그로 구간 지정</span></div>
+                  <div className="mode-toggle-texts"><span className="mode-toggle-title">구간 재생</span><span className="mode-toggle-desc">{isSeekMode ? '지점 재생 모드에서 비활성' : '클릭/드래그로 구간 지정'}</span></div>
                 </div>
                 <div className="toggle">
-                  <input type="checkbox" checked={isDragMode} onChange={(e) => { e.stopPropagation(); setIsDragMode(e.target.checked); }} />
+                  <input type="checkbox" checked={isDragMode} disabled={isSeekMode} onChange={(e) => { e.stopPropagation(); setIsDragMode(e.target.checked); }} />
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>
@@ -2089,24 +2098,24 @@ function App() {
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>
-              <div className={`mode-toggle-bar ${isAutoScroll ? 'active' : ''}`} onClick={() => { setIsAutoScroll(v => !v); isAutoScrollRef.current = !isAutoScrollRef.current; }}>
+              <div className={`mode-toggle-bar ${isAutoScroll ? 'active' : ''}${isEditMode ? ' disabled' : ''}`} onClick={() => { if (isEditMode) return; setIsAutoScroll(v => !v); isAutoScrollRef.current = !isAutoScrollRef.current; }} style={isEditMode ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
                 <div className="mode-toggle-info">
                   <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
-                  <div className="mode-toggle-texts"><span className="mode-toggle-title">자동 스크롤</span><span className="mode-toggle-desc">재생 위치로 자동 이동</span></div>
+                  <div className="mode-toggle-texts"><span className="mode-toggle-title">자동 스크롤</span><span className="mode-toggle-desc">{isEditMode ? '편집 모드에서 비활성' : '재생 위치로 자동 이동'}</span></div>
                 </div>
                 <div className="toggle">
-                  <input type="checkbox" checked={isAutoScroll} onChange={(e) => { e.stopPropagation(); setIsAutoScroll(e.target.checked); isAutoScrollRef.current = e.target.checked; }} />
+                  <input type="checkbox" checked={isAutoScroll} disabled={isEditMode} onChange={(e) => { e.stopPropagation(); setIsAutoScroll(e.target.checked); isAutoScrollRef.current = e.target.checked; }} />
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>
               {/* 자동 스크롤 자동켜기 토글 */}
-              <div className={`mode-toggle-bar sub-toggle ${autoScrollReEnable ? 'active' : ''}`} onClick={() => { setAutoScrollReEnable(v => !v); autoScrollReEnableRef.current = !autoScrollReEnableRef.current; }}>
+              <div className={`mode-toggle-bar sub-toggle ${autoScrollReEnable ? 'active' : ''}${isEditMode ? ' disabled' : ''}`} onClick={() => { if (isEditMode) return; setAutoScrollReEnable(v => !v); autoScrollReEnableRef.current = !autoScrollReEnableRef.current; }} style={isEditMode ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
                 <div className="mode-toggle-info">
                   <span className="mode-toggle-icon" style={{ opacity: 0.7 }}>⚡</span>
-                  <div className="mode-toggle-texts"><span className="mode-toggle-title">재생 시 자동켜기</span><span className="mode-toggle-desc">새 구간 시작 시 자동스크롤 ON</span></div>
+                  <div className="mode-toggle-texts"><span className="mode-toggle-title">재생 시 자동켜기</span><span className="mode-toggle-desc">{isEditMode ? '편집 모드에서 비활성' : '새 구간 시작 시 자동스크롤 ON'}</span></div>
                 </div>
                 <div className="toggle">
-                  <input type="checkbox" checked={autoScrollReEnable} onChange={(e) => { e.stopPropagation(); setAutoScrollReEnable(e.target.checked); autoScrollReEnableRef.current = e.target.checked; }} />
+                  <input type="checkbox" checked={autoScrollReEnable} disabled={isEditMode} onChange={(e) => { e.stopPropagation(); setAutoScrollReEnable(e.target.checked); autoScrollReEnableRef.current = e.target.checked; }} />
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>
@@ -2243,6 +2252,7 @@ function App() {
                       end={loopSegment?.end ?? 0}
                       playbackMode={
                         !loopMode ? 'none' :
+                        isSeekMode ? 'none' :
                         (isMultiRangeMode && multiRanges.length >= 2) ? 'none' :
                         (playbackOption === 'once' ? 'once' : 'loop')
                       }

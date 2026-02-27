@@ -1344,7 +1344,8 @@ function App() {
 
   /** 드래그 선택 이벤트 핸들러 */
   const handleDragStart = useCallback((idx: number) => {
-    if (!isDragModeRef.current || isSeekModeRef.current || isEditModeRef.current) return;
+    // 전체 재생 중에는 새 구간 추가 차단 (삭제는 허용)
+    if (!isDragModeRef.current || isSeekModeRef.current || isEditModeRef.current || isPlayAllRef.current) return;
     dragStartIdxRef.current   = idx;
     dragCurrentIdxRef.current = idx;
     setDragStartIdx(idx);
@@ -1479,25 +1480,41 @@ function App() {
         if (segments[i].start <= t) { found = i; break; }
       }
       if (found !== -1) {
+        // 구간 반복 중이면 선택된 구간 밖의 세그먼트에는 active 표시하지 않음
+        // (전체 재생 모드에서는 구간 전환 시 loopConfig가 비동기 갱신되므로 체크 건너뜀)
+        if (loopConfig && !isPlayAllRef.current) {
+          const rangeStart = Math.max(0, loopConfig.matchIndex - loopConfig.startOffset);
+          const rangeEnd   = Math.min(segments.length - 1, loopConfig.matchIndex + loopConfig.endOffset);
+          if (found < rangeStart || found > rangeEnd) {
+            updateActiveSegDom(-1);
+            return;
+          }
+        }
+        // updateActiveSegDom이 내부에서 prev !== newIdx일 때만 처리하므로
+        // 여기서는 found가 바뀌었을 때만 스크롤 (매 tick 호출 방지)
+        const segChanged = activeSegIdxRef.current !== found;
         updateActiveSegDom(found);
-        if (isAutoScrollRef.current && !userScrollingRef.current) {
+        if (isAutoScrollRef.current && !userScrollingRef.current && segChanged) {
+          // 가상화 환경: 화면 밖 세그먼트는 DOM에 없어 segEl이 null → 확실히 화면 밖
+          let inView = false;
           const segEl = segmentRefs.current[found];
           const scrollEl = transcriptScrollRef.current;
           if (segEl && scrollEl) {
             const segRect = segEl.getBoundingClientRect();
             const scrollRect = scrollEl.getBoundingClientRect();
-            const inView = segRect.top >= scrollRect.top && segRect.bottom <= scrollRect.bottom;
-            if (!inView) {
-              programmaticScrollRef.current = true;
-              virtualizer.scrollToIndex(found, { align: 'auto', behavior: 'smooth' });
-              setTimeout(() => { programmaticScrollRef.current = false; }, 200);
-            }
+            inView = segRect.top >= scrollRect.top && segRect.bottom <= scrollRect.bottom;
+          }
+          if (!inView) {
+            programmaticScrollRef.current = true;
+            const scrollIdx = displaySegMap ? displaySegMap.indexOf(found) : found;
+            if (scrollIdx >= 0) virtualizer.scrollToIndex(scrollIdx, { align: 'center', behavior: 'auto' });
+            setTimeout(() => { programmaticScrollRef.current = false; }, 100);
           }
         }
       }
     }, 50);
     return () => clearInterval(timer);
-  }, [segments, isTrackingMode, dragStartIdx, trackingOffset, updateActiveSegDom]);
+  }, [segments, isTrackingMode, dragStartIdx, trackingOffset, updateActiveSegDom, loopConfig]);
 
   // 휠/스크롤바 모두 통합 감지: scroll 이벤트는 위치 변경 후 발생 → 정확한 가시성 체크
   useEffect(() => {
@@ -1532,16 +1549,46 @@ function App() {
   const isInGapRef  = useRef(false);
   const activeMultiRangeIdxRef = useRef(0);
   const rangePlayCountRef = useRef(0); // 현재 구간 재생 횟수 카운터
+  const isPlayAllRef = useRef(false);  // true=전체 재생(순차 전환), false=개별 구간만 반복
+  const [isPlayAllActive, setIsPlayAllActive] = useState(false); // 전체 재생 시 대본 필터링 트리거
+
+  // 전체 재생 시: 선택 구간 세그먼트만 표시 (Set으로 중복 제거)
+  const displaySegMap = useMemo(() => {
+    if (!isPlayAllActive || multiRanges.length === 0) return null;
+    const indexSet = new Set<number>();
+    for (const r of multiRanges) {
+      for (let j = r.startIdx; j <= r.endIdx; j++) indexSet.add(j);
+    }
+    return [...indexSet].sort((a, b) => a - b);
+  }, [isPlayAllActive, multiRanges]);
+  // 구간별 고유 색상 팔레트 (연대기 라인용)
+  const RANGE_COLORS = ['#6366f1','#f59e0b','#ec4899','#14b8a6','#8b5cf6','#ef4444','#06b6d4','#84cc16','#f97316','#a855f7'];
+
+  // segRangeMap: 세그먼트 인덱스 → 소속 구간의 원본 인덱스 목록 (multiRanges 배열 기준)
+  const segRangeMap = useMemo(() => {
+    if (!isMultiRangeMode || multiRanges.length === 0) return null;
+    const rangeMap = new Map<number, number[]>(); // segIdx → [multiRanges 원본 인덱스들]
+    multiRanges.forEach((r, ri) => {
+      for (let j = r.startIdx; j <= r.endIdx; j++) {
+        const existing = rangeMap.get(j);
+        if (existing) existing.push(ri);
+        else rangeMap.set(j, [ri]);
+      }
+    });
+    return rangeMap;
+  }, [isMultiRangeMode, multiRanges]);
   useEffect(() => { activeMultiRangeIdxRef.current = activeMultiRangeIdx; }, [activeMultiRangeIdx]);
 
   useEffect(() => {
-    // 다중 구간 모드 + 구간 2개 이상 + loopMode만 처리
+    // 다중 구간 모드 + 구간 2개 이상 + loopMode일 때 interval 설정
     if (!isMultiRangeMode || multiRanges.length < 2 || !loopMode) return;
     if (dragStartIdx !== null) return;
 
     let cancelled = false; // 이 effect 인스턴스가 cleanup됐는지 여부
 
     const timer = setInterval(() => {
+      // 전체 재생 모드가 아니면 구간 전환 로직 건너뜀 (개별 재생은 LoopPlayer가 자체 반복)
+      if (!isPlayAllRef.current) return;
       if (isInGapRef.current) return;
       const player = loopPlayerRef.current;
       if (!player?.getCurrentTime) return;
@@ -1552,9 +1599,14 @@ function App() {
       const cur       = multiRanges[curIdx];
       if (!cur || !segments[cur.endIdx]) return;
 
-      const endTime    = segments[cur.endIdx].start + segments[cur.endIdx].duration;
+      // endTime 계산: 단일 구간(loopSegment)과 동일하게 다음 세그먼트 시작 시간을 사용
+      // (start + duration 방식은 다음 세그먼트 영역까지 침범할 수 있음)
+      const nextSeg    = segments[cur.endIdx + 1];
+      const endTime    = nextSeg
+        ? nextSeg.start
+        : segments[cur.endIdx].start + segments[cur.endIdx].duration;
       // 재생이 구간 끝에 도달했거나 영상이 자연 종료된 경우
-      const rangeEnded = (state === 1 && t >= endTime - 0.15) || state === 0;
+      const rangeEnded = (state === 1 && t >= endTime - 0.05) || state === 0;
       if (!rangeEnded) return;
 
       isInGapRef.current = true;
@@ -1623,9 +1675,9 @@ function App() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.code !== 'Space') return;
-      // input, textarea, button 등에 포커스 시 무시
+      // input, textarea, select에 포커스 시에는 텍스트 입력 우선
       const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'BUTTON' || tag === 'SELECT') return;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
       const player = loopPlayerRef.current;
       if (!player?.getPlayerState) return;
       e.preventDefault();
@@ -1674,7 +1726,7 @@ function App() {
 
   // ─── 가상 스크롤 (Virtual Scroll) ───────────────────────────
   const virtualizer = useVirtualizer({
-    count: segments.length,
+    count: displaySegMap ? displaySegMap.length : segments.length,
     getScrollElement: () => transcriptScrollRef.current,
     estimateSize: () => 38, // min-height 2.4rem ≈ 38px
     overscan: 10,
@@ -2043,7 +2095,68 @@ function App() {
                     <div className="multi-range-panel" style={{ marginLeft: 0, borderLeft: 'none', marginTop: '0.4rem' }}>
                       {multiRanges.length === 0 ? (
                         <p className="multi-range-hint">대본에서 드래그해서 구간을 추가하세요</p>
-                      ) : (
+                      ) : (<>
+                        {/* ── 전체 재생 토글 ── */}
+                        <div style={{ display: 'flex', gap: '0.4rem', marginBottom: '0.35rem' }}>
+                          <button
+                            className="sync-btn"
+                            style={{
+                              flex: 1, height: 26, fontSize: '0.7rem', fontWeight: 600, gap: '0.3rem',
+                              display: 'flex', alignItems: 'center', justifyContent: 'center',
+                              background: isPlayAllActive ? 'rgba(99,102,241,0.2)' : undefined,
+                              borderColor: isPlayAllActive ? 'rgba(99,102,241,0.5)' : undefined,
+                            }}
+                            onClick={() => {
+                              if (isPlayAllActive) {
+                                // ── OFF: 전체 대본 복원 + 현재 구간만 개별 반복 ──
+                                isPlayAllRef.current = false;
+                                setIsPlayAllActive(false);
+                                // 현재 진행 중인 구간을 개별 반복으로 전환
+                                const curIdx = activeMultiRangeIdxRef.current;
+                                const cur = multiRanges[curIdx];
+                                if (cur) {
+                                  setLoopConfig({ matchIndex: cur.startIdx, startOffset: 0, endOffset: cur.endIdx - cur.startIdx });
+                                }
+                              } else {
+                                // ── ON: 필터 뷰 + 순차 재생 시작 ──
+                                isPlayAllRef.current = true;
+                                setIsPlayAllActive(true);
+                                setActiveMultiRangeIdx(0);
+                                activeMultiRangeIdxRef.current = 0;
+                                rangePlayCountRef.current = 0;
+                                isInGapRef.current = true;
+                                const first = multiRanges[0];
+                                setLoopConfig({ matchIndex: first.startIdx, startOffset: 0, endOffset: first.endIdx - first.startIdx });
+                                setInteractionMode('play');
+                                if (playbackOptionRef.current === 'popup') setPlaybackOption('loop');
+                                const startTime = segments[first.startIdx]?.start ?? 0;
+                                const player = loopPlayerRef.current;
+                                if (player?.seekTo) { player.seekTo(startTime, true); player.playVideo(); }
+                                setTimeout(() => { isInGapRef.current = false; }, 300);
+                              }
+                              // 자동 스크롤 재활성화
+                              if (!isEditModeRef.current) {
+                                updateActiveSegDom(-1);
+                                programmaticScrollRef.current = true;
+                                isAutoScrollRef.current = true; setIsAutoScroll(true);
+                                setTimeout(() => { programmaticScrollRef.current = false; }, 600);
+                              }
+                            }}
+                          >
+                            {isPlayAllActive ? (
+                              <>
+                                <svg style={{ width: 11, height: 11 }} viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                                전체 재생 중 ({multiRanges.length}개 구간)
+                              </>
+                            ) : (
+                              <>
+                                <svg style={{ width: 11, height: 11 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                전체 재생 ({multiRanges.length}개 구간)
+                              </>
+                            )}
+                          </button>
+                        </div>
+                        {/* ── 구간 목록 ── */}
                         <div className="multi-range-list">
                           {multiRanges.map((r, ri) => {
                             const sSeg = segments[r.startIdx];
@@ -2052,7 +2165,38 @@ function App() {
                             const isPlaying = activeMultiRangeIdx === ri && loopMode;
                             return (
                               <div key={ri} className={`multi-range-item${isPlaying ? ' playing' : ''}`}>
-                                <span className="multi-range-num">{ri + 1}</span>
+                                {/* 개별 재생 버튼 */}
+                                <button
+                                  className="sync-btn"
+                                  title="이 구간만 반복 재생"
+                                  style={{ width: 22, height: 22, flexShrink: 0 }}
+                                  onClick={() => {
+                                    isPlayAllRef.current = false; // 개별 재생: 순차 전환 비활성
+                                    setIsPlayAllActive(false);
+
+                                    setActiveMultiRangeIdx(ri);
+                                    activeMultiRangeIdxRef.current = ri;
+                                    rangePlayCountRef.current = 0;
+                                    isInGapRef.current = true;
+                                    setLoopConfig({ matchIndex: r.startIdx, startOffset: 0, endOffset: r.endIdx - r.startIdx });
+                                    setInteractionMode('play');
+                                    if (playbackOptionRef.current === 'popup') setPlaybackOption('loop');
+                                    const startTime = segments[r.startIdx]?.start ?? 0;
+                                    const player = loopPlayerRef.current;
+                                    if (player?.seekTo) { player.seekTo(startTime, true); player.playVideo(); }
+                                    setTimeout(() => { isInGapRef.current = false; }, 300);
+                                    // 재생 버튼 클릭 = 명시적 액션 → 자동 스크롤 무조건 재활성화
+                                    if (!isEditModeRef.current) {
+                                      updateActiveSegDom(-1); // stale 위치로 인한 자동스크롤 해제 방지
+                                      programmaticScrollRef.current = true; // 셋업 기간 scroll 이벤트 무시
+                                      isAutoScrollRef.current = true; setIsAutoScroll(true);
+                                      setTimeout(() => { programmaticScrollRef.current = false; }, 600);
+                                    }
+                                  }}
+                                >
+                                  <svg style={{ width: 10, height: 10 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                                </button>
+                                <span className="multi-range-num" style={{ color: RANGE_COLORS[ri % RANGE_COLORS.length] }}>{ri + 1}</span>
                                 <span className="multi-range-time">
                                   {formatTimestamp(sSeg.start)} ~ {formatTimestamp(eSeg.start + eSeg.duration)}
                                 </span>
@@ -2071,6 +2215,7 @@ function App() {
                                     rangePlayCountRef.current = 0;
                                     if (remaining.length === 0) {
                                       setLoopConfig(null);
+                                      isPlayAllRef.current = false; setIsPlayAllActive(false);
                                     } else {
                                       const first = remaining[0];
                                       setLoopConfig({ matchIndex: first.startIdx, startOffset: 0, endOffset: first.endIdx - first.startIdx });
@@ -2080,7 +2225,7 @@ function App() {
                             );
                           })}
                         </div>
-                      )}
+                      </>)}
                       <div className="multi-range-gap-row">
                         <span className="sync-label">구간 간격</span>
                         <button className="sync-btn" onClick={() => setRangeGap(v => Math.max(0, +(v - 0.5).toFixed(1)))}> - </button>
@@ -2093,7 +2238,7 @@ function App() {
                       {multiRanges.length > 0 && (
                         <button
                           style={{ fontSize: '0.7rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: '0.1rem 0' }}
-                          onClick={() => { setMultiRanges([]); setActiveMultiRangeIdx(0); rangePlayCountRef.current = 0; setLoopConfig(null); }}
+                          onClick={() => { setMultiRanges([]); setActiveMultiRangeIdx(0); rangePlayCountRef.current = 0; setLoopConfig(null); isPlayAllRef.current = false; setIsPlayAllActive(false); }}
                         >구간 전체 삭제</button>
                       )}
                     </div>
@@ -2299,7 +2444,7 @@ function App() {
                       playbackMode={
                         !loopMode ? 'none' :
                         isSeekMode ? 'none' :
-                        (isMultiRangeMode && multiRanges.length >= 2) ? 'none' :
+                        (isMultiRangeMode && multiRanges.length >= 2 && isPlayAllRef.current) ? 'none' :
                         (playbackOption === 'once' ? 'once' : 'loop')
                       }
                       onClose={() => setLoopConfig(null)}
@@ -2911,9 +3056,45 @@ function App() {
                     className="transcript-segments"
                     style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}
                   >
+                    {/* 연대기 오버레이: 각 구간을 세로 직선으로 표시 (가시 영역 기반) */}
+                    {isMultiRangeMode && (() => {
+                      const vItems = virtualizer.getVirtualItems();
+                      if (vItems.length === 0) return null;
+                      return multiRanges.map((r, ri) => {
+                        // displaySegMap 모드면 가상 인덱스로 변환
+                        const startVi = displaySegMap ? displaySegMap.indexOf(r.startIdx) : r.startIdx;
+                        const endVi = displaySegMap ? displaySegMap.indexOf(r.endIdx) : r.endIdx;
+                        // 가시 영역에 속하는 아이템 필터
+                        const inView = vItems.filter(vi => vi.index >= startVi && vi.index <= endVi);
+                        if (inView.length === 0) return null;
+                        const top = inView[0].start;
+                        const last = inView[inView.length - 1];
+                        const height = last.start + last.size - top;
+                        const isActive = ri === activeMultiRangeIdx && loopMode;
+                        return (
+                          <div
+                            key={`range-line-${ri}`}
+                            style={{
+                              position: 'absolute',
+                              left: ri * 5 + 2,
+                              top,
+                              width: isActive ? 4 : 2,
+                              height,
+                              background: RANGE_COLORS[ri % RANGE_COLORS.length],
+                              opacity: isActive ? 0.85 : 0.35,
+                              borderRadius: 1,
+                              pointerEvents: 'none',
+                              zIndex: 2,
+                              transition: 'width 0.15s, opacity 0.15s',
+                            }}
+                          />
+                        );
+                      });
+                    })()}
                     {virtualizer.getVirtualItems().map(virtualRow => {
-                      const i = virtualRow.index;
+                      const i = displaySegMap ? displaySegMap[virtualRow.index] : virtualRow.index;
                       const seg = segments[i];
+                      if (!seg) return null;
                       const isHit = hitSet.has(i);
                       return (
                         <div

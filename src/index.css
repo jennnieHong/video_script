@@ -818,7 +818,7 @@ body.is-resizing iframe {
 .transcript-scroll {
   flex: 1;
   overflow-y: scroll;   /* scroll: 항상 스크롤바 표시 → 마우스로 잡기 쉬움 */
-  padding: 1.25rem 0.75rem 1.25rem 1.5rem; /* 우측 여백 줄여 스크롤바 공간 확보 */
+  padding: 1.25rem 0.75rem 6rem 1.5rem; /* 하단 패딩 넉넉하게 → 마지막 세그먼트 잘림 방지 */
   /* ─ 대본 전용 스크롤바: 넓고 잡기 쉽게 ─ */
   scrollbar-width: auto;        /* Firefox */
   scrollbar-color: var(--surface-3) transparent; /* Firefox thumb / track */
@@ -1777,6 +1777,29 @@ body.is-resizing iframe {
 
 .transcript-seg.active .seg-text {
   color: var(--text-primary);
+}
+
+/* 다중 구간: 연대기 스타일 좌측 라인 인디케이터 */
+.range-indicators {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  display: flex;
+  gap: 1px;
+  padding-left: 2px;
+  pointer-events: none;
+  z-index: 1;
+}
+.range-indicator-line {
+  width: 2.5px;
+  border-radius: 1px;
+  opacity: 0.5;
+  transition: width 0.15s, opacity 0.15s;
+}
+.range-indicator-line.ri-active {
+  width: 5px;
+  opacity: 0.9;
 }
 
 /* 구간 선택 핀 표시 */

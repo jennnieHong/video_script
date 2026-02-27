@@ -1842,6 +1842,54 @@ function App() {
     setTimeout(() => URL.revokeObjectURL(url), 100);
   };
 
+  // ─── SRT 파일 업로드 (자막 복원) ────────────────────────────────
+  const srtInputRef = useRef<HTMLInputElement>(null);
+
+  /** SRT 타임스탬프 → 초 변환 (e.g. "00:01:23,456" → 83.456) */
+  const parseSrtTime = (t: string): number => {
+    const m = t.match(/(\d{2}):(\d{2}):(\d{2})[,.](\d{3})/);
+    if (!m) return 0;
+    return +m[1] * 3600 + +m[2] * 60 + +m[3] + +m[4] / 1000;
+  };
+
+  /** SRT 텍스트 → Segment[] 파싱 */
+  const parseSrt = (text: string): Segment[] => {
+    const blocks = text.trim().replace(/\r\n/g, '\n').split(/\n\n+/);
+    const segs: Segment[] = [];
+    for (const block of blocks) {
+      const lines = block.trim().split('\n');
+      if (lines.length < 2) continue;
+      const timeLineIdx = lines.findIndex(l => l.includes('-->'));
+      if (timeLineIdx < 0) continue;
+      const [startStr, endStr] = lines[timeLineIdx].split('-->').map(s => s.trim());
+      const start = parseSrtTime(startStr);
+      const end = parseSrtTime(endStr);
+      const textContent = lines.slice(timeLineIdx + 1).join(' ').trim();
+      if (!textContent) continue;
+      segs.push({ start, duration: end - start, text: textContent });
+    }
+    return segs;
+  };
+
+  const handleSrtUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = reader.result as string;
+      const parsed = parseSrt(text);
+      if (parsed.length === 0) {
+        alert('SRT 파일 파싱에 실패했습니다. 형식을 확인해주세요.');
+        return;
+      }
+      setSegments(parsed);
+      setTranscript(parsed.map(s => s.text).join(' '));
+      setTranslations({});
+      translationsRef.current = {};
+    };
+    reader.readAsText(file, 'utf-8');
+    e.target.value = '';
+  };
   // ================================================================
   // JSX 렌더링
   // ================================================================
@@ -2550,6 +2598,25 @@ function App() {
                       <Download style={{ width: 13, height: 13 }} />
                       SRT
                     </button>
+                    <button
+                      className="btn-icon"
+                      onClick={() => srtInputRef.current?.click()}
+                      title="SRT 자막 파일 불러오기"
+                    >
+                      <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="17 8 12 3 7 8"/>
+                        <line x1="12" y1="3" x2="12" y2="15"/>
+                      </svg>
+                      SRT
+                    </button>
+                    <input
+                      ref={srtInputRef}
+                      type="file"
+                      accept=".srt"
+                      style={{ display: 'none' }}
+                      onChange={handleSrtUpload}
+                    />
                   </>
                 )}
                 <div className="divider-v" />

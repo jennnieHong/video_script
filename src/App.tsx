@@ -87,6 +87,12 @@ function LoopPlayer({
   onClose: () => void;
   formatTimestamp: (s: number) => string;
   onPlayerReady?: (player: any) => void;
+  // playbackMode: LoopPlayer 내부의 구간 경계 감시 동작을 결정
+  //   - 'loop': start~end 구간을 무한 반복 (end 도달 시 start로 seekTo)
+  //   - 'once': start~end 구간을 1번만 재생 후 일시정지
+  //   - 'none': 구간 경계를 감시하지 않음 (자유 재생)
+  //             → 지점 재생(isSeekMode) 중이거나, 다중 구간(multiRange) 모드에서 사용
+  //             → 다중 구간의 경우 별도 useEffect가 구간 전환을 직접 처리
   playbackMode?: 'loop' | 'once' | 'none';
 }) {
   // YouTube IFrame API가 교체할 실제 DOM div를 참조
@@ -329,8 +335,8 @@ function App() {
 
   // ─── 상태(State) 정의 ──────────────────────────────────────────
 
-  const [url, setUrl] = useState('');
-  const urlInputRef = useRef<HTMLInputElement>(null);
+  const [url, setUrl] = useState('');                 // 사용자가 입력한 YouTube URL
+  const urlInputRef = useRef<HTMLInputElement>(null);  // URL 입력 필드 DOM ref (자동 포커스용)
   const [loading, setLoading] = useState(false); // 백엔드 요청 진행 중 여부 (로딩 스피너 제어)
   const [transcript, setTranscript] = useState(''); // 추출된 전체 자막 텍스트 (평문)
   const [segments, setSegments] = useState<Segment[]>([]); // 타임스탬프별 세그먼트 배열
@@ -338,15 +344,15 @@ function App() {
   const [error, setError] = useState('');        // 사용자에게 표시할 에러 메시지
   const [copied, setCopied] = useState(false);   // "복사됨" 피드백 표시 여부 (2초 후 자동 리셋)
 
-  const searchQueryRef = useRef('');
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const [showModePanel, setShowModePanel] = useState(false);
-  const [showSearchResults, setShowSearchResults] = useState(false);
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [fuzzySearch, setFuzzySearch] = useState(true);
-  const [searchRange, setSearchRange] = useState(10);
-  const [fuzzyThreshold, setFuzzyThreshold] = useState(0.3); // 유사도 (0=정확, 1=느슨)
-  const [showSearchOpts, setShowSearchOpts] = useState(false);
+  const searchQueryRef = useRef('');  // 현재 검색어 (리렌더 없이 빠르게 참조)
+  const searchInputRef = useRef<HTMLInputElement>(null);  // 검색 입력 필드 DOM ref
+  const [showModePanel, setShowModePanel] = useState(false);  // 클릭 동작(검색/재생) 모드 선택 패널 표시 여부
+  const [showSearchResults, setShowSearchResults] = useState(false);  // 검색 결과 리스트 패널 열림 여부
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]); // 현재 검색 결과 배열
+  const [fuzzySearch, setFuzzySearch] = useState(true); // 유사 검색(fuse.js) 활성화 여부 (false = 정확 일치만)
+  const [searchRange, setSearchRange] = useState(10); // 검색 결과 컨텍스트 윈도우 크기 (앞뒤 세그먼트 수)
+  const [fuzzyThreshold, setFuzzyThreshold] = useState(0.3);  // 유사도 임계값 (0=정확 일치, 1=느슨)
+  const [showSearchOpts, setShowSearchOpts] = useState(false);  // 검색 옵션 패널 열림 여부
 
   // ─── 레이아웃 리사이즈 state ─────────────────────────────────────
   interface LayoutSizes { leftWidth: number; clipWidth: number; videoRatio: number; }
@@ -357,23 +363,23 @@ function App() {
       return raw ? { ...LAYOUT_DEFAULTS, ...JSON.parse(raw) } : { ...LAYOUT_DEFAULTS };
     } catch { return { ...LAYOUT_DEFAULTS }; }
   };
-  const [layoutSizes, setLayoutSizes] = useState<LayoutSizes>(loadLayout);
-  const layoutRef = useRef(layoutSizes);
-  const dragRef = useRef<{ type: string; startX: number; startY: number; startVal: number } | null>(null);
+  const [layoutSizes, setLayoutSizes] = useState<LayoutSizes>(loadLayout); // 패널 크기 (localStorage에서 복원)
+  const layoutRef = useRef(layoutSizes);                                   // 리사이즈 핸들러에서 최신값 동기 참조
+  const dragRef = useRef<{ type: string; startX: number; startY: number; startVal: number } | null>(null); // 리사이즈 드래그 진행 정보
 
   // ─── 패널 접기/펼치기 state ───────────────────────────────────────
-  const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('ys-left-collapsed') === 'true');
-  const [clipCollapsed, setClipCollapsed] = useState(() => localStorage.getItem('ys-clip-collapsed') === 'true');
+  const [leftCollapsed, setLeftCollapsed] = useState(() => localStorage.getItem('ys-left-collapsed') === 'true');   // 왼쪽 패널 접힘 여부 (localStorage 지속)
+  const [clipCollapsed, setClipCollapsed] = useState(() => localStorage.getItem('ys-clip-collapsed') === 'true');   // 클립 패널 접힘 여부 (localStorage 지속)
   useEffect(() => { localStorage.setItem('ys-left-collapsed', String(leftCollapsed)); }, [leftCollapsed]);
   useEffect(() => { localStorage.setItem('ys-clip-collapsed', String(clipCollapsed)); }, [clipCollapsed]);
 
   // ─── 플로팅 비디오 state ──────────────────────────────────────────
-  const [isVideoFloating, setIsVideoFloating] = useState(false);
-  const [floatingVideoPos, setFloatingVideoPos] = useState({ x: 100, y: 100, w: 640, h: 360 });
-  const videoContainerRef = useRef<HTMLDivElement>(null);
-  const videoDockZoneRef = useRef<HTMLDivElement>(null);
-  const floatingDragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number; isDragging: boolean } | null>(null);
-  const floatingResizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number; dir: string } | null>(null);
+  const [isVideoFloating, setIsVideoFloating] = useState(false);           // 비디오 플레이어 플로팅(분리) 상태 여부
+  const [floatingVideoPos, setFloatingVideoPos] = useState({ x: 100, y: 100, w: 640, h: 360 }); // 플로팅 창 위치·크기
+  const videoContainerRef = useRef<HTMLDivElement>(null);                   // 비디오 컨테이너 DOM ref (도킹/분리 위치 계산)
+  const videoDockZoneRef = useRef<HTMLDivElement>(null);                    // 도킹 영역 DOM ref (스냅백 판단)
+  const floatingDragRef = useRef<{ startX: number; startY: number; startPosX: number; startPosY: number; isDragging: boolean } | null>(null); // 플로팅 드래그 진행 정보
+  const floatingResizeRef = useRef<{ startX: number; startY: number; startW: number; startH: number; dir: string } | null>(null); // 플로팅 리사이즈 진행 정보
   // 드래그 시작 시 원본 위치 (분리 임계값 판단용)
   const videoDetachRef = useRef<{ startX: number; startY: number; originRect: DOMRect | null; isDragging: boolean }>({ startX: 0, startY: 0, originRect: null, isDragging: false });
   // 마지막 플로팅 크기 기억 (도킹→분리 시 이전 크기 유지)
@@ -589,13 +595,13 @@ function App() {
   };
 
   // ─── 대본 저장/불러오기 state ────────────────────────────────────
-  const savedScriptsRef = useRef<SavedScript[]>(loadAllScripts());
-  const [showScriptsPanel, setShowScriptsPanel] = useState(false);
-  const scriptTitleRef = useRef<HTMLInputElement>(null);
-  const [activeScriptId, setActiveScriptId] = useState<string | null>(null);
-  const isEditModeRef = useRef(false);
-  const [isEditMode, setIsEditMode] = useState(false);
-  const editBtnRef = useRef<HTMLButtonElement>(null);
+  const savedScriptsRef = useRef<SavedScript[]>(loadAllScripts());         // 저장된 대본 목록 (ref: 렌더 없이 빠르게 조회)
+  const [showScriptsPanel, setShowScriptsPanel] = useState(false);         // 저장된 대본 목록 패널 표시 여부
+  const scriptTitleRef = useRef<HTMLInputElement>(null);                    // 대본 제목 입력 필드 DOM ref
+  const [activeScriptId, setActiveScriptId] = useState<string | null>(null); // 현재 편집/로드 중인 대본 ID (null = 새 대본)
+  const isEditModeRef = useRef(false);                                     // 편집모드 동기 참조 (이벤트 핸들러 내에서 즉시 읽기용)
+  const [isEditMode, setIsEditMode] = useState(false);                     // 자막 편집 모드 ON/OFF (타임스탬프·텍스트 직접 수정 가능)
+  const editBtnRef = useRef<HTMLButtonElement>(null);                       // 편집 버튼 DOM ref (active 클래스 직접 토글)
   const toggleEditMode = useCallback(() => {
     isEditModeRef.current = !isEditModeRef.current;
     setIsEditMode(isEditModeRef.current);
@@ -646,9 +652,9 @@ function App() {
     forceScriptsUpdate(n => n + 1);
   };
 
-  // activeSegIdx: LoopPlayer 재생 중 현재 재생 위치에 해당하는 세그먼트 인덱스
+  // activeSegIdxRef: LoopPlayer 재생 중 현재 재생 위치에 해당하는 세그먼트 인덱스
   // -1이면 비활성 (재생 안 함 또는 세그먼트 없음)
-  const [activeSegIdx, setActiveSegIdx] = useState<number>(-1);
+  // DOM 직접 조작(updateActiveSegDom)으로 클래스 토글하므로 state 불필요, ref만 사용
   const activeSegIdxRef = useRef<number>(-1);
 
   // DOM 직접 조작으로 active 클래스 전환 (렌더링 없음)
@@ -659,6 +665,45 @@ function App() {
     if (newIdx >= 0) segmentRefs.current[newIdx]?.classList.add('active');
     activeSegIdxRef.current = newIdx;
   }, []);
+
+  // ─── 재생 모드 체계 (Mode Architecture) ──────────────────────────
+  //
+  // [1] interactionMode: 검색 결과/타임스탬프 클릭 시 무엇을 할지
+  //     'search' = 해당 세그먼트로 스크롤 이동 (기본값)
+  //     'play'   = 해당 구간을 LoopPlayer로 재생
+  //
+  // [2] playbackOption: interactionMode='play'일 때 재생 방식
+  //     'loop'  = 앱 내 플레이어에서 구간 무한 반복
+  //     'once'  = 앱 내 플레이어에서 구간 1회 재생 후 정지
+  //     'popup' = 새 탭에서 YouTube 열기 (앱 내 플레이어 사용 안 함)
+  //
+  // [3] isSeekMode (지점 재생): ON 시 세그먼트 클릭으로 해당 위치부터 자유 재생
+  //     - isDragMode(구간 재생)를 비활성화
+  //     - LoopPlayer playbackMode를 'none'으로 전환 (구간 경계 무시)
+  //     - loopConfig는 보존됨 → OFF 시 이전 구간으로 복귀 가능
+  //
+  // [4] isDragMode (구간 재생): ON 시 드래그/클릭으로 구간 선택
+  //     - 구간 확정(finalizeRange) 시 loopConfig + interactionMode='play' 자동 설정
+  //     - isSeekMode ON 시 자동 비활성화
+  //
+  // [5] loopConfig: 재생할 구간의 세그먼트 인덱스 범위
+  //     - null이면 구간 미설정 → loopMode=false → LoopPlayer playbackMode='none'
+  //     - 지점 재생(isSeekMode) 전환 시에도 보존되어 복귀 가능
+  //
+  // [6] loopMode (파생값): 앱 내 플레이어 구간 반복/1회 표시 여부
+  //     = interactionMode==='play' && playbackOption!=='popup' && loopConfig!==null
+  //
+  // [7] LoopPlayer playbackMode 결정 (렌더 시 계산):
+  //     !loopMode           → 'none' (구간 설정 없거나 popup 모드)
+  //     isSeekMode          → 'none' (지점 재생 중, 구간 경계 무시)
+  //     isMultiRange(2개+)  → 'none' (별도 useEffect가 구간 전환 처리)
+  //     playbackOption      → 'once' | 'loop'
+  //
+  // [8] isMultiRangeMode: 다중 구간 모드
+  //     - 드래그할 때마다 새 구간을 multiRanges[]에 추가
+  //     - 2개 이상이면 별도 setInterval 로직이 순차/반복 재생 관리
+  //     - LoopPlayer playbackMode='none'으로 두고 직접 seekTo/playVideo 호출
+  // ──────────────────────────────────────────────────────────────────
 
   // segmentRefs: 각 세그먼트 DOM 요소에 대한 ref 배열 (자동 스크롤용)
   const segmentRefs = useRef<(HTMLDivElement | null)[]>([]);
@@ -673,9 +718,10 @@ function App() {
   // - 'once': 앱 내 플레이어로 해당 구간만 1번 재생 후 멈춤
   // - 'popup': 새 창에서 해당 시간대 열기
   const [playbackOption, setPlaybackOption] = useState<'loop' | 'once' | 'popup'>('loop');
-  const interactionModeRef = useRef(interactionMode);
-  const playbackOptionRef = useRef(playbackOption);
-  const videoIdRef = useRef(videoId);
+  // ref 동기화: 이벤트 핸들러 클로저에서 항상 최신 state를 읽을 수 있도록
+  const interactionModeRef = useRef(interactionMode);   // interactionMode 동기 참조
+  const playbackOptionRef = useRef(playbackOption);     // playbackOption 동기 참조
+  const videoIdRef = useRef(videoId);                   // videoId 동기 참조
   interactionModeRef.current = interactionMode;
   playbackOptionRef.current = playbackOption;
   videoIdRef.current = videoId;
@@ -730,8 +776,8 @@ function App() {
   const [pendingUrl, setPendingUrl] = useState('');
   // pendingUrl: Whisper 확인 모달이 뜬 동안 임시 저장된 요청 URL
 
-  const [checkedSegs, setCheckedSegs] = useState<Set<number>>(new Set());
-  const checkedSegsRef = useRef<Set<number>>(new Set());
+  const [checkedSegs, setCheckedSegs] = useState<Set<number>>(new Set());  // 체크된 세그먼트 인덱스 집합 (구간 반복 범위 시각적 표시)
+  const checkedSegsRef = useRef<Set<number>>(new Set());                   // 동기 참조 (handleSegToggle 등에서 즉시 읽기)
 
   // checkedSegs DOM 동기화: 모든 세그먼트의 checked/seg-check--on 클래스 갱신
   const syncCheckedDom = useCallback((segs: Set<number>) => {
@@ -751,23 +797,23 @@ function App() {
   const [selectedLang, setSelectedLang] = useState('');                   // 사용자가 선택한 언어 코드 ('' = 자동)
   const [langLoading, setLangLoading] = useState(false);                  // 언어 목록 로딩 중 여부
   const [langError, setLangError] = useState('');                         // 언어 조회 실패 메시지
-  const [isDragMode, setIsDragMode] = useState(false);                 // 드래그 선택 모드 활성화 여부
-  const [isMultiRangeMode, setIsMultiRangeMode] = useState(false);     // 다중 구간 모드 (드래그할 때마다 구간 추가)
-  const [multiRanges, setMultiRanges] = useState<{startIdx: number; endIdx: number; repeatCount: number}[]>([]);
-  const [rangeGap, setRangeGap] = useState(1);                         // 구간 사이 간격 (초)
-  const [activeMultiRangeIdx, setActiveMultiRangeIdx] = useState(0);   // 현재 재생 중인 구간 번호
-  const [dragStartIdx, setDragStartIdx] = useState<number | null>(null); // 드래그 시작 세그먼트 인덱스
-  // ref: state 업데이트 비동기 지연 없이 드래그 핸들러에서 즉시 읽기 위한 동기 참조
-  const dragStartIdxRef   = useRef<number | null>(null);
-  const dragCurrentIdxRef = useRef<number | null>(null);
-  const rangeClickRef     = useRef<number | null>(null); // 클릭 2회 구간 설정용 첫 번째 클릭 위치
-  const [isTrackingMode, setIsTrackingMode] = useState(true);
-  const [isAutoScroll, setIsAutoScroll] = useState(true);                // 자동 스크롤 ON/OFF (트래킹과 독립)
-  const isAutoScrollRef = useRef(true);
-  const transcriptScrollRef = useRef<HTMLDivElement>(null);
-  const userScrollingRef = useRef(false);   // 사용자 휠 스크롤 중에는 scrollIntoView 억제
-  const wheelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const programmaticScrollRef = useRef(false); // scrollIntoView 호출 중이면 true (스크롤바 감지와 구분)
+  const [isDragMode, setIsDragMode] = useState(false);                 // 구간 재생: 드래그/클릭으로 구간 선택 모드 (지점 재생 ON 시 비활성)
+  const [isMultiRangeMode, setIsMultiRangeMode] = useState(false);     // 다중 구간 모드 (드래그할 때마다 새 구간 추가)
+  const [multiRanges, setMultiRanges] = useState<{startIdx: number; endIdx: number; repeatCount: number}[]>([]); // 다중 구간 목록 (시작/끝 인덱스 + 반복 횟수)
+  const [rangeGap, setRangeGap] = useState(1);                         // 다중 구간 사이 간격 (초)
+  const [activeMultiRangeIdx, setActiveMultiRangeIdx] = useState(0);   // 다중 구간: 현재 재생 중인 구간 번호
+  const [dragStartIdx, setDragStartIdx] = useState<number | null>(null); // 드래그 시작 세그먼트 인덱스 (null = 드래그 중 아님)
+  // ref 동기화: state 업데이트 비동기 지연 없이 드래그 핸들러에서 즉시 읽기 위한 동기 참조
+  const dragStartIdxRef   = useRef<number | null>(null);               // 드래그 시작 인덱스 동기 참조
+  const dragCurrentIdxRef = useRef<number | null>(null);               // 드래그 현재 인덱스 동기 참조
+  const rangeClickRef     = useRef<number | null>(null);               // 클릭 2회 구간 설정: 첫 번째 클릭 위치 (null = 미설정)
+  const [isTrackingMode, setIsTrackingMode] = useState(true);          // 위치 트래킹: 현재 재생 위치를 하이라이트할지 여부
+  const [isAutoScroll, setIsAutoScroll] = useState(true);              // 자동 스크롤: 재생 위치로 자동 스크롤 ON/OFF (트래킹과 독립)
+  const isAutoScrollRef = useRef(true);                                // 자동 스크롤 동기 참조
+  const transcriptScrollRef = useRef<HTMLDivElement>(null);            // 자막 목록 스크롤 컨테이너 DOM ref
+  const userScrollingRef = useRef(false);                              // 사용자 휠/스크롤바 스크롤 중 플래그 (scrollIntoView 억제)
+  const wheelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);  // 휠 스크롤 종료 감지 타이머
+  const programmaticScrollRef = useRef(false);                         // scrollIntoView 호출 중 플래그 (사용자 스크롤과 구분)
 
   /** 휠 스크롤: scrollIntoView 억제 (scroll 이벤트가 가시성 판단) */
   const handleTranscriptWheel = useCallback(() => {
@@ -778,9 +824,9 @@ function App() {
   }, []);
 
   // 자동 스크롤 자동켜기: 새 재생 구간 설정 시 자동 스크롤을 다시 ON
-  const [autoScrollReEnable, setAutoScrollReEnable] = useState(true);
-  const autoScrollReEnableRef = useRef(true);
-  const [reEnableTrigger, setReEnableTrigger] = useState(0);  // 재생 액션 트리거 카운터
+  const [autoScrollReEnable, setAutoScrollReEnable] = useState(true);  // 새 구간 재생 시 자동 스크롤을 다시 ON 할지 여부
+  const autoScrollReEnableRef = useRef(true);                          // 동기 참조 (useEffect 내에서 즉시 읽기)
+  const [reEnableTrigger, setReEnableTrigger] = useState(0);           // 재생 액션 발생 카운터 (변경 시 자동스크롤 재활성화 트리거)
 
   // loopConfig 변경 OR 지점재생 클릭 시 자동 스크롤 재활성화
   useEffect(() => {
@@ -800,17 +846,17 @@ function App() {
 
   const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
   const [timestampPrecision, setTimestampPrecision] = useState(0);       // 타임스탬프 정밀도 (0:초, 1:0.1s, 2:0.01s, 3:ms)
-  const [isSeekMode, setIsSeekMode] = useState(false);                  // 선택지점부터 재생 모드 (각 세그먼트에 ▶ 버튼 표시)
-  const isDragModeRef = useRef(false);
-  const isSeekModeRef = useRef(false);
-  // ref 동기화
+  const [isSeekMode, setIsSeekMode] = useState(false);                  // 지점 재생 모드: 세그먼트 클릭 시 해당 위치부터 자유 재생 (ON 시 구간 재생 비활성)
+  const isDragModeRef = useRef(false);                                  // isDragMode 동기 참조 (드래그 핸들러 내에서 즉시 확인)
+  const isSeekModeRef = useRef(false);                                  // isSeekMode 동기 참조 (클릭 핸들러 내에서 모드 분기)
+  // ref ↔ state 동기화: 렌더마다 ref를 최신 state로 갱신
   isDragModeRef.current = isDragMode;
   isSeekModeRef.current = isSeekMode;
   const [playCtrlOpen, setPlayCtrlOpen] = useState(true);              // 재생 컨트롤 접이식 열림 상태
   const [showTranslation, setShowTranslation] = useState(false);         // 발음 자막 편집 패널 표시
   const [translations, setTranslations] = useState<Record<number, string>>({}); // 세그먼트별 발음 텍스트
-  const translationsRef = useRef<Record<number, string>>({});
-  translationsRef.current = translations;
+  const translationsRef = useRef<Record<number, string>>({});              // 동기 참조 (클립 다운로드 시 즉시 읽기)
+  translationsRef.current = translations;                                  // 렌더마다 최신값 동기화
   const [clipQuality, setClipQuality] = useState<'360'|'480'|'720'|'1080'|'best'|'vertical'>('720'); // 클립 다운로드 해상도
   const [burnSubs,   setBurnSubs]   = useState(false);                    // 자막 굽기 모드
   const [subStyle,   setSubStyle]   = useState({                          // 자막 스타일

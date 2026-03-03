@@ -351,6 +351,7 @@ function App() {
   const [uploadProgress, setUploadProgress] = useState(''); // 업로드/전사 진행 상태 메시지
   const [isDragOverUpload, setIsDragOverUpload] = useState(false); // 드래그 오버 상태
   const localFileInputRef = useRef<HTMLInputElement>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
   const [toastMessage, setToastMessage] = useState(''); // 토스트 메시지 (빈 문자열이면 숨김)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const showToast = useCallback((msg: string, ms = 2000) => {
@@ -1538,6 +1539,26 @@ function App() {
   // 해당 시간에 속하는 세그먼트를 찾아 activeSegIdx를 업데이트한다.
   const loopPlayerRef = useRef<any>(null); // LoopPlayer가 공유해주는 YT.Player ref
 
+  /** YouTube / 로컬 비디오 통합 탐색+재생 헬퍼 */
+  const seekAndPlay = useCallback((time: number) => {
+    if (localMediaUrl && localVideoRef.current) {
+      localVideoRef.current.currentTime = time;
+      localVideoRef.current.play();
+    } else {
+      const player = loopPlayerRef.current;
+      if (player?.seekTo) { player.seekTo(time, true); player.playVideo(); }
+    }
+  }, [localMediaUrl]);
+
+  /** 현재 재생 시간 가져오기 (YouTube / 로컬 통합) */
+  const getCurrentTime = useCallback((): number => {
+    if (localMediaUrl && localVideoRef.current) {
+      return localVideoRef.current.currentTime;
+    }
+    const player = loopPlayerRef.current;
+    return player?.getCurrentTime?.() ?? 0;
+  }, [localMediaUrl]);
+
   useEffect(() => {
     // 트래킹 모드 꺼져 있거나 세그먼트 없으면 종료
     if (!isTrackingMode || segments.length === 0) {
@@ -1547,13 +1568,17 @@ function App() {
     if (dragStartIdx !== null) return;
 
     const timer = setInterval(() => {
-      const player = loopPlayerRef.current;
-      if (!player?.getCurrentTime) return;
+      // 로컬 비디오: 일시정지 중이면 건너뜀
+      if (localMediaUrl && localVideoRef.current) {
+        if (localVideoRef.current.paused) return;
+      } else {
+        const player = loopPlayerRef.current;
+        if (!player?.getCurrentTime) return;
+        const state = player.getPlayerState?.();
+        if (state !== 1) return;
+      }
 
-      const state = player.getPlayerState?.();
-      if (state !== 1) return;
-
-      const t = player.getCurrentTime() + trackingOffset;
+      const t = getCurrentTime() + trackingOffset;
 
       let found = -1;
       for (let i = segments.length - 1; i >= 0; i--) {
@@ -1594,7 +1619,7 @@ function App() {
       }
     }, 50);
     return () => clearInterval(timer);
-  }, [segments, isTrackingMode, dragStartIdx, trackingOffset, updateActiveSegDom, loopConfig]);
+  }, [segments, isTrackingMode, dragStartIdx, trackingOffset, updateActiveSegDom, loopConfig, getCurrentTime, localMediaUrl]);
 
   // 휠/스크롤바 모두 통합 감지: scroll 이벤트는 위치 변경 후 발생 → 정확한 가시성 체크
   useEffect(() => {
@@ -2427,8 +2452,7 @@ function App() {
                                 setInteractionMode('play');
                                 if (playbackOptionRef.current === 'popup') setPlaybackOption('loop');
                                 const startTime = segments[first.startIdx]?.start ?? 0;
-                                const player = loopPlayerRef.current;
-                                if (player?.seekTo) { player.seekTo(startTime, true); player.playVideo(); }
+                                seekAndPlay(startTime);
                                 setTimeout(() => { isInGapRef.current = false; }, 300);
                               }
                               // 자동 스크롤 재활성화
@@ -2479,8 +2503,7 @@ function App() {
                                     setInteractionMode('play');
                                     if (playbackOptionRef.current === 'popup') setPlaybackOption('loop');
                                     const startTime = segments[r.startIdx]?.start ?? 0;
-                                    const player = loopPlayerRef.current;
-                                    if (player?.seekTo) { player.seekTo(startTime, true); player.playVideo(); }
+                                    seekAndPlay(startTime);
                                     setTimeout(() => { isInGapRef.current = false; }, 300);
                                     // 재생 버튼 클릭 = 명시적 액션 → 자동 스크롤 무조건 재활성화
                                     if (!isEditModeRef.current) {
@@ -2731,7 +2754,16 @@ function App() {
                     <span className="video-grab-dots">⣿⣿⣿</span>
                   </div>
                 )}
-                {videoId && (
+                {localMediaUrl ? (
+                  <div className="video-section">
+                    <video
+                      ref={localVideoRef}
+                      src={localMediaUrl}
+                      controls
+                      style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000', borderRadius: '0.5rem' }}
+                    />
+                  </div>
+                ) : videoId && (
                   <div className="video-section">
                     <LoopPlayer
                       key={`player-${videoId}`}
@@ -3349,8 +3381,7 @@ function App() {
                                     setLoopConfig({ matchIndex: base, startOffset: 0, endOffset });
                                     setInteractionMode('play');
                                     if (playbackOption === 'popup') setPlaybackOption('loop');
-                                    const player = loopPlayerRef.current;
-                                    if (player?.seekTo) { player.seekTo(segments[base]?.start ?? 0, true); player.playVideo(); }
+                                    seekAndPlay(segments[base]?.start ?? 0);
                                     segmentRefs.current.forEach(el => el?.classList.remove('search-highlight'));
                                     for (let si = result.loopStartIdx; si <= result.loopEndIdx; si++) segmentRefs.current[si]?.classList.add('search-highlight');
                                     segmentRefs.current[result.loopStartIdx]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -3475,11 +3506,7 @@ function App() {
                             if (!isSeekModeRef.current) return;
                             setLoopConfig(null);
                             setReEnableTrigger(v => v + 1);
-                            const player = loopPlayerRef.current;
-                            if (player?.seekTo) {
-                              player.seekTo(seg.start, true);
-                              player.playVideo();
-                            }
+                            seekAndPlay(seg.start);
                           }}
                         >
                           <button

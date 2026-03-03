@@ -2647,16 +2647,21 @@ input.seg-edit-text:focus {
   color: #dc2626 !important;
   transform: translateX(-50%) scale(1.3);
 }
-/* wavesurfer region 세로선 → 빨간 점선 */
-.waveform-container div[part="region"],
-.waveform-container div[style*="position: absolute"][style*="height: 100%"] {
-  border-left: 1.5px dashed #ef4444 !important;
-  background: transparent !important;
-  opacity: 0.8;
+/* wavesurfer region → 빨간 점선 (클래스 기반) */
+.wf-seg-marker {
+  border-left: none !important;
+  background: repeating-linear-gradient(
+    to bottom,
+    #ef4444 0px, #ef4444 4px,
+    transparent 4px, transparent 8px
+  ) !important;
+  width: 2px !important;
+  overflow: visible !important;
+  z-index: 3 !important;
+  opacity: 0.85;
   transition: opacity 0.15s;
 }
-.waveform-container div[part="region"]:hover,
-.waveform-container div[style*="position: absolute"][style*="height: 100%"]:hover {
-  border-left: 2px dashed #dc2626 !important;
+.wf-seg-marker:hover {
+  width: 3px !important;
   opacity: 1;
 }

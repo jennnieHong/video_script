@@ -1856,10 +1856,10 @@ function App() {
     });
     // 세그먼트 시작점마다 빨간 마커 추가
     segments.forEach((seg, i) => {
-      // ▼ 마커 엘리먼트
+      // ▼ 마커 엘리먼트 — 크게, 잡기 쉽게
       const marker = document.createElement('span');
       marker.textContent = '\u25BC';
-      marker.style.cssText = 'color:#ef4444;font-size:9px;position:absolute;top:0;left:-4px;line-height:1;pointer-events:none;text-shadow:0 0 3px rgba(0,0,0,0.8);z-index:10;';
+      marker.style.cssText = 'color:#ef4444;font-size:14px;position:absolute;top:-2px;left:50%;transform:translateX(-50%);line-height:1;cursor:grab;text-shadow:0 0 4px rgba(0,0,0,0.8);z-index:10;padding:4px;';
       const region = rp.addRegion({
         id: `seg-${i}`,
         start: seg.start,
@@ -1868,13 +1868,15 @@ function App() {
         drag: true,
         resize: false,
       });
-      // 빨간 점선 + overflow visible
+      // 점선 스타일 강제 적용 (classList + inline 이중 적용)
       const el = region.element as HTMLElement | undefined;
       if (el) {
-        el.style.borderLeft = '2px dashed #ef4444';
-        el.style.background = 'transparent';
-        el.style.zIndex = '3';
-        el.style.overflow = 'visible';
+        el.classList.add('wf-seg-marker');
+        el.style.setProperty('border-left', 'none', 'important');
+        el.style.setProperty('background', 'repeating-linear-gradient(to bottom, #ef4444 0px, #ef4444 4px, transparent 4px, transparent 8px)', 'important');
+        el.style.setProperty('width', '2px', 'important');
+        el.style.setProperty('overflow', 'visible', 'important');
+        el.style.setProperty('z-index', '3', 'important');
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps

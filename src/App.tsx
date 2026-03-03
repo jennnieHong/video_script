@@ -352,6 +352,8 @@ function App() {
   const [isDragOverUpload, setIsDragOverUpload] = useState(false); // 드래그 오버 상태
   const localFileInputRef = useRef<HTMLInputElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
+  const [markIn, setMarkIn] = useState<number | null>(null);     // 수동 자막: 시작(In) 마커 시간
+  const [markOut, setMarkOut] = useState<number | null>(null);   // 수동 자막: 끝(Out) 마커 시간
   const [toastMessage, setToastMessage] = useState(''); // 토스트 메시지 (빈 문자열이면 숨김)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const showToast = useCallback((msg: string, ms = 2000) => {
@@ -1053,6 +1055,46 @@ function App() {
     }
   };
 
+  /** 전사 없이 미디어만 업로드 (수동 자막 작업용) */
+  const handleLocalMediaOnly = async (file: File) => {
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    const allowed = ['mp4', 'webm', 'mp3', 'wav', 'm4a', 'ogg', 'flac', 'mkv', 'avi'];
+    if (!allowed.includes(ext)) {
+      setError(`지원하지 않는 파일 형식입니다: .${ext}`);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    setUploadProgress('파일 업로드 중...');
+    setLocalFileName(file.name);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch('http://localhost:8000/upload-media', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: '업로드 실패' }));
+        throw new Error(err.detail || '업로드 실패');
+      }
+      const data = await res.json();
+      setSegments([]);
+      setTranscript(' '); // hasResult = true 트리거 (빈 문자열이면 false)
+      setVideoId(data.file_id || '');
+      setLocalMediaUrl(`http://localhost:8000${data.media_url}`);
+      setUploadProgress('');
+      showToast(`📁 ${file.name} 업로드 완료 — 수동 자막 모드`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+      setError(msg);
+      setUploadProgress('');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
   // ─── 폼 제출 핸들러 ───────────────────────────────────────────
   /** URL 입력 후 "추출하기" 버튼 클릭 또는 Enter 입력 시 호출 */
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1559,6 +1601,71 @@ function App() {
     return player?.getCurrentTime?.() ?? 0;
   }, [localMediaUrl]);
 
+  /** In 마커 설정 — 시작점 지정 */
+  const setInMark = useCallback(() => {
+    const t = parseFloat(getCurrentTime().toFixed(2));
+    setMarkIn(t);
+    showToast(`▶ In: ${formatTimestamp(t)}`);
+  }, [getCurrentTime, showToast, formatTimestamp]);
+
+  /** Out 마커 설정 — 끝점 지정 */
+  const setOutMark = useCallback(() => {
+    const t = parseFloat(getCurrentTime().toFixed(2));
+    setMarkOut(t);
+    showToast(`◼ Out: ${formatTimestamp(t)}`);
+  }, [getCurrentTime, showToast, formatTimestamp]);
+
+  /** In~Out 구간으로 빈 세그먼트 추가 (정밀 모드) */
+  const addManualSegment = useCallback(() => {
+    if (markIn == null || markOut == null) {
+      showToast('⚠ In/Out 마커를 먼저 설정하세요 (I키, O키)');
+      return;
+    }
+    const start = Math.min(markIn, markOut);
+    const end = Math.max(markIn, markOut);
+    if (end - start < 0.05) {
+      showToast('⚠ 구간이 너무 짧습니다');
+      return;
+    }
+    const newSeg: Segment = { start, duration: end - start, text: '' };
+    setSegments(prev => {
+      const next = [...prev, newSeg];
+      next.sort((a, b) => a.start - b.start);
+      return next;
+    });
+    setSegmentsVersion(v => v + 1);
+    setMarkIn(null);
+    setMarkOut(null);
+    showToast(`✅ 세그먼트 추가: ${formatTimestamp(start)} ~ ${formatTimestamp(end)}`);
+  }, [markIn, markOut, showToast, formatTimestamp]);
+
+  /** Cut — 연속 세그먼트 빠른 생성 (시작점 자동 이동) */
+  const cutSegment = useCallback(() => {
+    const t = parseFloat(getCurrentTime().toFixed(2));
+    if (markIn == null) {
+      // 첫 컷: 시작점 설정
+      setMarkIn(t);
+      showToast(`✂ 시작점: ${formatTimestamp(t)}  (다음 C키에서 세그먼트 생성)`);
+      return;
+    }
+    const start = Math.min(markIn, t);
+    const end = Math.max(markIn, t);
+    if (end - start < 0.05) {
+      showToast('⚠ 구간이 너무 짧습니다');
+      return;
+    }
+    const newSeg: Segment = { start, duration: end - start, text: '' };
+    setSegments(prev => {
+      const next = [...prev, newSeg];
+      next.sort((a, b) => a.start - b.start);
+      return next;
+    });
+    setSegmentsVersion(v => v + 1);
+    setMarkIn(t);  // 현재 시간 → 다음 시작점
+    setMarkOut(null);
+    showToast(`✅ 세그먼트 추가: ${formatTimestamp(start)} ~ ${formatTimestamp(end)}`);
+  }, [markIn, getCurrentTime, showToast, formatTimestamp]);
+
   useEffect(() => {
     // 트래킹 모드 꺼져 있거나 세그먼트 없으면 종료
     if (!isTrackingMode || segments.length === 0) {
@@ -1776,22 +1883,52 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isMultiRangeMode, multiRanges, loopMode, segments, rangeGap, dragStartIdx]);
 
-  // ─── 스페이스바 재생/일시정지 토글 ─────────────────────────────
+  // ─── 글로벌 단축키 (스페이스바 + I/O 마커) ──────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.code !== 'Space') return;
       // input, textarea, select에 포커스 시에는 텍스트 입력 우선
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      const player = loopPlayerRef.current;
-      if (!player?.getPlayerState) return;
-      e.preventDefault();
-      const state = player.getPlayerState();
-      if (state === 1) { player.pauseVideo(); } else { player.playVideo(); }
+      // Ctrl/Cmd/Alt 조합은 무시 (Ctrl+C 등 시스템 단축키 보호)
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        if (localMediaUrl && localVideoRef.current) {
+          // 로컬 비디오 재생/일시정지
+          localVideoRef.current.paused ? localVideoRef.current.play() : localVideoRef.current.pause();
+        } else {
+          const player = loopPlayerRef.current;
+          if (!player?.getPlayerState) return;
+          const state = player.getPlayerState();
+          if (state === 1) { player.pauseVideo(); } else { player.playVideo(); }
+        }
+      } else if (e.key === 'i' || e.key === 'I') {
+        setInMark();
+      } else if (e.key === 'o' || e.key === 'O') {
+        setOutMark();
+      } else if (e.key === 'p' || e.key === 'P') {
+        addManualSegment();
+      } else if (e.key === 'c' || e.key === 'C') {
+        cutSegment();
+      } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        e.preventDefault();
+        const step = e.shiftKey ? 1 : 5; // Shift 누르면 1초, 기본 5초
+        const delta = e.key === 'ArrowLeft' ? -step : step;
+        if (localMediaUrl && localVideoRef.current) {
+          localVideoRef.current.currentTime = Math.max(0, localVideoRef.current.currentTime + delta);
+        } else {
+          const player = loopPlayerRef.current;
+          if (player?.getCurrentTime && player?.seekTo) {
+            const t = Math.max(0, player.getCurrentTime() + delta);
+            player.seekTo(t, true);
+          }
+        }
+      }
     };
     document.addEventListener('keydown', handler);
     return () => document.removeEventListener('keydown', handler);
-  }, []);
+  }, [localMediaUrl, setInMark, setOutMark, addManualSegment, cutSegment]);
 
   // ─── 탭 전환 시 URL 입력창 자동 포커스 ───────────────────────
   useEffect(() => {
@@ -2288,7 +2425,24 @@ function App() {
                 </svg>
                 <span className="upload-drop-text">로컬 영상/음성 파일을 드래그하거나 클릭하여 업로드</span>
                 <span className="upload-drop-formats">.mp4 .webm .mp3 .wav .m4a .ogg .flac</span>
+                <span className="upload-drop-hint">AI 음성인식으로 자동 전사됩니다</span>
               </div>
+              <button
+                className="upload-manual-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const input = document.createElement('input');
+                  input.type = 'file';
+                  input.accept = '.mp4,.webm,.mp3,.wav,.m4a,.ogg,.flac,.mkv,.avi';
+                  input.onchange = () => {
+                    const file = input.files?.[0];
+                    if (file) handleLocalMediaOnly(file);
+                  };
+                  input.click();
+                }}
+              >
+                📝 전사 없이 업로드 (수동 자막 작업)
+              </button>
               <input
                 ref={localFileInputRef}
                 type="file"
@@ -2801,7 +2955,7 @@ function App() {
               <div className="action-bar">
                 <span className="action-bar-title">
                   <FileText style={{ width: 14, height: 14, color: 'var(--brand-light)' }} />
-                  추출된 대사
+                  {localMediaUrl ? '자막' : '추출된 대사'}
                   {segments.length > 0 && (
                     <span style={{
                       fontSize: '0.7rem', padding: '0.15rem 0.5rem',
@@ -2810,6 +2964,24 @@ function App() {
                     }}>{segments.length}개</span>
                   )}
                 </span>
+                {/* 수동 자막: 마커 + 컷 */}
+                {localMediaUrl && (
+                  <div className="marker-bar">
+                    <button className={`btn-icon btn-marker${markIn != null ? ' active' : ''}`} onClick={setInMark} title="시작점 (I키)">
+                      ▶{markIn != null && <span className="marker-time">{formatTimestamp(markIn)}</span>}
+                    </button>
+                    <button className={`btn-icon btn-marker${markOut != null ? ' active' : ''}`} onClick={setOutMark} title="끝점 (O키)">
+                      ◼{markOut != null && <span className="marker-time">{formatTimestamp(markOut)}</span>}
+                    </button>
+                    <button className="btn-icon btn-marker-add" onClick={addManualSegment} disabled={markIn == null || markOut == null} title="세그먼트 확정 (P키)">
+                      + 확정
+                    </button>
+                    <span style={{ width: 1, height: 16, background: 'var(--border)', margin: '0 0.15rem' }} />
+                    <button className="btn-icon btn-marker-add" onClick={cutSegment} title="빠른 컷 (C키)">
+                      ✂ 컷
+                    </button>
+                  </div>
+                )}
                 <button
                   ref={editBtnRef}
                   className="btn-icon"

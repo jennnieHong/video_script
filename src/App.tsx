@@ -629,8 +629,8 @@ function App() {
     document.body.style.cursor = 'row-resize';
     document.body.style.userSelect = 'none';
     const onMove = (ev: MouseEvent) => {
-      // 위로 드래그 → 높이 증가 (핸들이 상단이므로)
-      const newH = Math.max(40, Math.min(300, startH + (startY - ev.clientY)));
+      // 아래로 드래그 → 높이 증가, 위로 → 축소
+      const newH = Math.max(40, Math.min(300, startH + (ev.clientY - startY)));
       setWaveformHeight(newH);
       wavesurferRef.current?.setOptions({ height: newH });
     };
@@ -1733,17 +1733,44 @@ function App() {
     const regionsPlugin = ws.registerPlugin(RegionsPlugin.create());
     wsRegionsRef.current = regionsPlugin;
 
-    // 마커 드래그 완료 → 세그먼트 시간 업데이트
+    // 마커 드래그 완료 → 세그먼트 시간 업데이트 (제한 규칙 적용)
+    const MIN_GAP = 0.05; // 최소 간격 (초)
     regionsPlugin.on('region-updated', (region: any) => {
       const match = region.id?.match(/^seg-(\d+)$/);
       if (!match) return;
       const idx = parseInt(match[1]);
-      const newStart = parseFloat(region.start.toFixed(2));
       setSegments(prev => {
         const next = [...prev];
         if (!next[idx]) return prev;
-        const oldEnd = next[idx].start + next[idx].duration;
-        next[idx] = { ...next[idx], start: newStart, duration: Math.max(0.05, oldEnd - newStart) };
+
+        const seg = next[idx];
+        const segEnd = seg.start + seg.duration;
+        let newStart = parseFloat(region.start.toFixed(2));
+
+        // 규칙 1: 이전 세그먼트의 start + MIN_GAP 이하로 이동 금지
+        if (idx > 0) {
+          const prevStart = next[idx - 1].start;
+          newStart = Math.max(newStart, prevStart + MIN_GAP);
+        } else {
+          newStart = Math.max(newStart, 0); // 0초 미만 금지
+        }
+
+        // 규칙 2: 자기 세그먼트의 end - MIN_GAP 이상으로 이동 금지
+        newStart = Math.min(newStart, segEnd - MIN_GAP);
+
+        // 규칙 3: 자기 세그먼트 duration 업데이트
+        next[idx] = { ...next[idx], start: newStart, duration: segEnd - newStart };
+
+        // 규칙 4: 인접한 이전 세그먼트의 끝(duration)을 자동 조정
+        if (idx > 0) {
+          const prevSeg = next[idx - 1];
+          const prevEnd = prevSeg.start + prevSeg.duration;
+          // 이전 세그먼트의 끝이 현재 마커를 넘으면 잘라냄
+          if (prevEnd > newStart) {
+            next[idx - 1] = { ...prevSeg, duration: Math.max(MIN_GAP, newStart - prevSeg.start) };
+          }
+        }
+
         return next;
       });
     });
@@ -1752,7 +1779,25 @@ function App() {
     ws.load(localMediaUrl);
     wavesurferRef.current = ws;
 
-    ws.on('ready', () => setWaveformReady(true));
+    ws.on('ready', () => {
+      setWaveformReady(true);
+      // wavesurfer 내부 스크롤 wrapper에 스크롤바 강제 표시
+      try {
+        const scrollEl = (ws as any).renderer?.wrapper || ws.getWrapper?.() || waveformContainerRef.current?.firstElementChild;
+        if (scrollEl) {
+          scrollEl.style.overflowX = 'auto';
+          scrollEl.style.scrollbarWidth = 'thin';
+          scrollEl.style.scrollbarColor = 'rgba(99,102,241,0.5) transparent';
+        }
+        // 모든 자식 div에도 강제 적용
+        waveformContainerRef.current?.querySelectorAll('div').forEach((el: HTMLElement) => {
+          if (el.scrollWidth > el.clientWidth || el.style.overflow?.includes('auto') || el.style.overflow?.includes('scroll')) {
+            el.style.scrollbarWidth = 'thin';
+            el.style.scrollbarColor = 'rgba(99,102,241,0.5) transparent';
+          }
+        });
+      } catch { /* ignore */ }
+    });
 
     // AbortError 억제 (wavesurfer 내부 fetch abort — 정상 동작)
     const suppressAbort = (e: PromiseRejectionEvent) => {
@@ -1760,12 +1805,11 @@ function App() {
     };
     window.addEventListener('unhandledrejection', suppressAbort);
 
-    // Ctrl+휠 (또는 Shift+휠)로 가로 확대/축소 — 마우스 위치 기준
+    // 파형 위에서 휠로 가로 확대/축소 — 마우스 위치 기준
     const container = waveformContainerRef.current;
     const handleWheel = (e: WheelEvent) => {
       const ws2 = wavesurferRef.current;
       if (!ws2 || !container) return;
-      if (!(e.ctrlKey || e.shiftKey)) return;
       e.preventDefault();
       const wrapper = container.querySelector('div[data-testid="waveform"]') as HTMLElement
         || container.firstElementChild as HTMLElement;
@@ -1780,8 +1824,13 @@ function App() {
       const newZoom = Math.max(0, Math.min(800, currentZoom * factor));
       ws2.zoom(newZoom);
       requestAnimationFrame(() => {
+        // 줌 후 스크롤 위치 보정
         const newScrollLeft = timeAtCursor * newZoom - mouseX;
         if (wrapper.scrollTo) wrapper.scrollTo({ left: Math.max(0, newScrollLeft) });
+        // 줌 후 스크롤바 강제 표시
+        wrapper.style.overflowX = 'auto';
+        wrapper.style.scrollbarWidth = 'thin';
+        wrapper.style.scrollbarColor = 'rgba(99,102,241,0.5) transparent';
       });
     };
     container?.addEventListener('wheel', handleWheel, { passive: false });
@@ -3112,15 +3161,23 @@ function App() {
                   </>
                 )}
               </div>
+              {/* 파형이 있으면: 구분선1(영상↔파형) */}
+              {localMediaUrl && !isVideoFloating && (
+                <div className="resize-handle resize-handle-h" onMouseDown={handleResizeStart('video')} />
+              )}
               {/* 파형 시각화 (로컬 미디어) */}
               {localMediaUrl && (
-                <div className="waveform-wrap">
-                  <div className="waveform-resize-handle" onMouseDown={handleWaveformResizeStart} />
-                  <div ref={waveformContainerRef} className="waveform-container" />
+                <div className="waveform-wrap" style={{ height: waveformHeight + 28 }}>
+                  <div ref={waveformContainerRef} className="waveform-container" style={{ height: waveformHeight + 20 }} />
                 </div>
               )}
-              {/* 비디오↔대본 드래그 핸들 */}
-              {!isVideoFloating && <div className="resize-handle resize-handle-h" onMouseDown={handleResizeStart('video')} />}
+              {/* 파형 없으면: 구분선(영상↔자막), 파형 있으면: 구분선2(파형↔자막) */}
+              {!isVideoFloating && (
+                <div
+                  className="resize-handle resize-handle-h"
+                  onMouseDown={localMediaUrl ? handleWaveformResizeStart : handleResizeStart('video')}
+                />
+              )}
 
 
               {/* 액션 바 */}

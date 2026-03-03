@@ -24,6 +24,7 @@ import { englishToKorean } from './engToKor';
 // fuse.js: 유사 문자열 검색 (오타/띄어쓰기 허용)
 import Fuse from 'fuse.js';
 import WaveSurfer from 'wavesurfer.js';
+import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 
 // ─── 한글 자모 분해 (오타/미완성 입력 대응) ─────────────────────────
 const INITIALS = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
@@ -357,6 +358,8 @@ function App() {
   const [markOut, setMarkOut] = useState<number | null>(null);   // 수동 자막: 끝(Out) 마커 시간
   const wavesurferRef = useRef<WaveSurfer | null>(null);         // WaveSurfer 인스턴스
   const waveformContainerRef = useRef<HTMLDivElement>(null);      // 파형 DOM 컨테이너
+  const wsRegionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null);
+  const [waveformReady, setWaveformReady] = useState(false);      // 파형 로딩 완료 여부
   const [waveformHeight, setWaveformHeight] = useState(64);       // 파형 높이 (px, 드래그 리사이즈)
   const [toastMessage, setToastMessage] = useState(''); // 토스트 메시지 (빈 문자열이면 숨김)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -1721,13 +1724,41 @@ function App() {
       hideScrollbar: false,
       autoScroll: true,
       autoCenter: false,
-      minPxPerSec: 0, // 초기: 전체 뷰에 맞춤
+      minPxPerSec: 0,
       // audio는 재생하지 않음 — 비디오에서 소리 출력
       media: localVideoRef.current || undefined,
     });
 
+    // Regions 플러그인 등록 (세그먼트 마커용)
+    const regionsPlugin = ws.registerPlugin(RegionsPlugin.create());
+    wsRegionsRef.current = regionsPlugin;
+
+    // 마커 드래그 완료 → 세그먼트 시간 업데이트
+    regionsPlugin.on('region-updated', (region: any) => {
+      const match = region.id?.match(/^seg-(\d+)$/);
+      if (!match) return;
+      const idx = parseInt(match[1]);
+      const newStart = parseFloat(region.start.toFixed(2));
+      setSegments(prev => {
+        const next = [...prev];
+        if (!next[idx]) return prev;
+        const oldEnd = next[idx].start + next[idx].duration;
+        next[idx] = { ...next[idx], start: newStart, duration: Math.max(0.05, oldEnd - newStart) };
+        return next;
+      });
+    });
+
+    setWaveformReady(false);
     ws.load(localMediaUrl);
     wavesurferRef.current = ws;
+
+    ws.on('ready', () => setWaveformReady(true));
+
+    // AbortError 억제 (wavesurfer 내부 fetch abort — 정상 동작)
+    const suppressAbort = (e: PromiseRejectionEvent) => {
+      if (e.reason?.name === 'AbortError') e.preventDefault();
+    };
+    window.addEventListener('unhandledrejection', suppressAbort);
 
     // Ctrl+휠 (또는 Shift+휠)로 가로 확대/축소 — 마우스 위치 기준
     const container = waveformContainerRef.current;
@@ -1736,24 +1767,18 @@ function App() {
       if (!ws2 || !container) return;
       if (!(e.ctrlKey || e.shiftKey)) return;
       e.preventDefault();
-
-      // 마우스 위치의 시간 계산
       const wrapper = container.querySelector('div[data-testid="waveform"]') as HTMLElement
         || container.firstElementChild as HTMLElement;
       if (!wrapper) return;
       const scrollLeft = wrapper.scrollLeft || 0;
       const rect = container.getBoundingClientRect();
-      const mouseX = e.clientX - rect.left; // 컨테이너 내 마우스 x
+      const mouseX = e.clientX - rect.left;
       const duration = ws2.getDuration();
       const currentZoom = ws2.options.minPxPerSec || (rect.width / duration);
       const timeAtCursor = (scrollLeft + mouseX) / currentZoom;
-
-      // 줌 적용
       const factor = e.deltaY < 0 ? 1.25 : 0.8;
       const newZoom = Math.max(0, Math.min(800, currentZoom * factor));
       ws2.zoom(newZoom);
-
-      // 줌 후 같은 시간이 커서 아래에 오도록 스크롤 보정
       requestAnimationFrame(() => {
         const newScrollLeft = timeAtCursor * newZoom - mouseX;
         if (wrapper.scrollTo) wrapper.scrollTo({ left: Math.max(0, newScrollLeft) });
@@ -1762,12 +1787,49 @@ function App() {
     container?.addEventListener('wheel', handleWheel, { passive: false });
 
     return () => {
+      window.removeEventListener('unhandledrejection', suppressAbort);
       container?.removeEventListener('wheel', handleWheel);
+      wsRegionsRef.current = null;
+      setWaveformReady(false);
       ws.destroy();
       wavesurferRef.current = null;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localMediaUrl]);
+
+  // ─── 세그먼트 ↔ 파형 마커 동기화 ─────────────────────────────
+  useEffect(() => {
+    const rp = wsRegionsRef.current;
+    if (!rp || !localMediaUrl || !waveformReady) return;
+    // 기존 마커 제거
+    rp.getRegions().forEach((r: any) => {
+      if (r.id?.startsWith('seg-')) r.remove();
+    });
+    // 세그먼트 시작점마다 빨간 마커 추가
+    segments.forEach((seg, i) => {
+      // ▼ 마커 엘리먼트
+      const marker = document.createElement('span');
+      marker.textContent = '\u25BC';
+      marker.style.cssText = 'color:#ef4444;font-size:9px;position:absolute;top:0;left:-4px;line-height:1;pointer-events:none;text-shadow:0 0 3px rgba(0,0,0,0.8);z-index:10;';
+      const region = rp.addRegion({
+        id: `seg-${i}`,
+        start: seg.start,
+        content: marker,
+        color: 'rgba(0,0,0,0)',
+        drag: true,
+        resize: false,
+      });
+      // 빨간 점선 + overflow visible
+      const el = region.element as HTMLElement | undefined;
+      if (el) {
+        el.style.borderLeft = '2px dashed #ef4444';
+        el.style.background = 'transparent';
+        el.style.zIndex = '3';
+        el.style.overflow = 'visible';
+      }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segments, localMediaUrl, waveformReady]);
 
   useEffect(() => {
     // 트래킹 모드 꺼져 있거나 세그먼트 없으면 종료

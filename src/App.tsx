@@ -1787,6 +1787,29 @@ function App() {
       });
     });
 
+    // 마커 더블클릭 → 세그먼트 병합 (이전 세그먼트에 흡수)
+    regionsPlugin.on('region-double-clicked', (region: any) => {
+      const match = region.id?.match(/^seg-(\d+)$/);
+      if (!match) return;
+      const idx = parseInt(match[1]);
+      if (idx === 0) return; // 첫 번째 세그먼트는 삭제 불가
+
+      setSegments(prev => {
+        const next = [...prev];
+        if (!next[idx] || !next[idx - 1]) return prev;
+        const prevSeg = next[idx - 1];
+        const curSeg = next[idx];
+        const mergedEnd = curSeg.start + curSeg.duration;
+        // 이전 세그먼트가 현재 세그먼트의 끝까지 확장
+        const mergedDuration = mergedEnd - prevSeg.start;
+        // 텍스트 결합
+        const mergedText = [prevSeg.text, curSeg.text].filter(Boolean).join(' ');
+        next[idx - 1] = { ...prevSeg, duration: mergedDuration, text: mergedText };
+        next.splice(idx, 1); // 현재 세그먼트 삭제
+        return next;
+      });
+    });
+
     setWaveformReady(false);
     ws.load(localMediaUrl);
     wavesurferRef.current = ws;

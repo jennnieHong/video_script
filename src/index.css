@@ -2572,3 +2572,15 @@ input.seg-edit-text:focus {
   margin-top: 0.3rem;
   opacity: 0.7;
 }
+
+/* ── 파형(Waveform) 시각화 ── */
+.waveform-wrap {
+  padding: 0.4rem 0.5rem;
+  background: var(--surface-2);
+  border-top: 1px solid var(--border);
+}
+.waveform-container {
+  border-radius: 0.375rem;
+  overflow: hidden;
+  cursor: pointer;
+}

@@ -23,6 +23,7 @@ import { romanize } from '@romanize/korean';
 import { englishToKorean } from './engToKor';
 // fuse.js: 유사 문자열 검색 (오타/띄어쓰기 허용)
 import Fuse from 'fuse.js';
+import WaveSurfer from 'wavesurfer.js';
 
 // ─── 한글 자모 분해 (오타/미완성 입력 대응) ─────────────────────────
 const INITIALS = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
@@ -354,6 +355,8 @@ function App() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const [markIn, setMarkIn] = useState<number | null>(null);     // 수동 자막: 시작(In) 마커 시간
   const [markOut, setMarkOut] = useState<number | null>(null);   // 수동 자막: 끝(Out) 마커 시간
+  const wavesurferRef = useRef<WaveSurfer | null>(null);         // WaveSurfer 인스턴스
+  const waveformContainerRef = useRef<HTMLDivElement>(null);      // 파형 DOM 컨테이너
   const [toastMessage, setToastMessage] = useState(''); // 토스트 메시지 (빈 문자열이면 숨김)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const showToast = useCallback((msg: string, ms = 2000) => {
@@ -1666,6 +1669,45 @@ function App() {
     showToast(`✅ 세그먼트 추가: ${formatTimestamp(start)} ~ ${formatTimestamp(end)}`);
   }, [markIn, getCurrentTime, showToast, formatTimestamp]);
 
+  // ─── WaveSurfer 파형 초기화 & 비디오 동기화 ─────────────────────
+  useEffect(() => {
+    if (!localMediaUrl || !waveformContainerRef.current) return;
+
+    // 기존 인스턴스 정리
+    if (wavesurferRef.current) {
+      wavesurferRef.current.destroy();
+      wavesurferRef.current = null;
+    }
+
+    const ws = WaveSurfer.create({
+      container: waveformContainerRef.current,
+      waveColor: 'rgba(99, 102, 241, 0.35)',
+      progressColor: 'rgba(99, 102, 241, 0.8)',
+      cursorColor: '#6366f1',
+      cursorWidth: 2,
+      height: 64,
+      barWidth: 2,
+      barGap: 1,
+      barRadius: 2,
+      normalize: true,
+      interact: true,
+      hideScrollbar: true,
+      // audio는 재생하지 않음 — 비디오에서 소리 출력
+      media: localVideoRef.current || undefined,
+    });
+
+    ws.load(localMediaUrl);
+    wavesurferRef.current = ws;
+
+    // 파형 클릭 시 비디오 동기화는 media 연결로 자동 처리됨
+
+    return () => {
+      ws.destroy();
+      wavesurferRef.current = null;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localMediaUrl]);
+
   useEffect(() => {
     // 트래킹 모드 꺼져 있거나 세그먼트 없으면 종료
     if (!isTrackingMode || segments.length === 0) {
@@ -2947,6 +2989,12 @@ function App() {
                   </>
                 )}
               </div>
+              {/* 파형 시각화 (로컬 미디어) */}
+              {localMediaUrl && (
+                <div className="waveform-wrap">
+                  <div ref={waveformContainerRef} className="waveform-container" />
+                </div>
+              )}
               {/* 비디오↔대본 드래그 핸들 */}
               {!isVideoFloating && <div className="resize-handle resize-handle-h" onMouseDown={handleResizeStart('video')} />}
 

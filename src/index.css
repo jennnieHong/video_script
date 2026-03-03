@@ -2445,3 +2445,75 @@ input.seg-edit-text:focus {
   accent-color: var(--accent);
   cursor: pointer;
 }
+
+/* ── 로컬 파일 업로드 ── */
+.upload-divider {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 1.2rem 0;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+.upload-divider::before,
+.upload-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.upload-drop-zone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 1.8rem 1rem;
+  border: 2px dashed var(--border);
+  border-radius: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s;
+  background: transparent;
+}
+.upload-drop-zone:hover {
+  border-color: var(--brand);
+  background: rgba(99, 102, 241, 0.04);
+}
+.upload-drop-zone.drag-over {
+  border-color: var(--brand);
+  background: rgba(99, 102, 241, 0.08);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
+}
+.upload-drop-text {
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  margin-bottom: 0.25rem;
+}
+.upload-drop-formats {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+}
+
+.upload-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.8rem;
+  margin-top: 0.6rem;
+  background: var(--surface-2);
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--brand-light);
+  overflow: hidden;
+}
+.upload-filename {
+  margin-left: auto;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

@@ -580,6 +580,99 @@ async def clip_with_burned_subs(request: BurnSubsRequest, background_tasks: Back
         logger.error(f"❌ 자막 굽기 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"자막 굽기에 실패했습니다: {str(e)}")
 
+# ─── 로컬 파일 업로드 엔드포인트 ──────────────────────────────────
+from fastapi import UploadFile, File
+from fastapi.staticfiles import StaticFiles
+import shutil
+import uuid
+
+# 업로드 파일 임시 저장 디렉토리
+UPLOAD_DIR = BASE_DIR / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+# 정적 파일 서빙 (업로드된 미디어 파일 접근용)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+@app.post("/upload-transcribe")
+async def upload_and_transcribe(file: UploadFile = File(...)):
+    """
+    로컬 영상/음성 파일을 업로드하여 Whisper로 전사합니다.
+    지원 형식: mp4, webm, mp3, wav, m4a, ogg, flac
+    """
+    if whisper is None:
+        raise HTTPException(status_code=500, detail="Whisper가 설치되지 않았습니다. pip install openai-whisper")
+
+    # 확장자 검증
+    ext = Path(file.filename).suffix.lower() if file.filename else ""
+    allowed = {".mp4", ".webm", ".mp3", ".wav", ".m4a", ".ogg", ".flac", ".mkv", ".avi"}
+    if ext not in allowed:
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 파일 형식입니다: {ext}")
+
+    # 고유 ID 생성
+    file_id = str(uuid.uuid4())[:8]
+    safe_name = f"{file_id}{ext}"
+
+    try:
+        # 파일 저장
+        file_path = UPLOAD_DIR / safe_name
+        with open(file_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        logger.info(f"📁 파일 업로드 완료: {file.filename} → {safe_name} ({file_path.stat().st_size / 1024 / 1024:.1f}MB)")
+
+        # Whisper 전사
+        logger.info("🎙️ Whisper 전사 시작...")
+        model = whisper.load_model("base")
+        result = model.transcribe(str(file_path))
+
+        segments = [{
+            "start": seg["start"],
+            "duration": seg["end"] - seg["start"],
+            "text": seg["text"]
+        } for seg in result.get("segments", [])]
+
+        logger.info(f"✅ 전사 완료! {len(segments)}개 세그먼트")
+
+        return {
+            "transcript": result["text"],
+            "segments": segments,
+            "video_id": file_id,
+            "method": "whisper",
+            "language": result.get("language", "unknown"),
+            "media_url": f"/uploads/{safe_name}",
+            "filename": file.filename,
+        }
+
+    except Exception as e:
+        # 실패 시 파일 정리
+        if file_path.exists():
+            file_path.unlink()
+        logger.error(f"❌ 로컬 파일 전사 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"전사에 실패했습니다: {str(e)}")
+
+@app.post("/upload-media")
+async def upload_media(file: UploadFile = File(...)):
+    """
+    로컬 영상/음성 파일을 업로드하여 재생 URL을 반환합니다 (전사 없이).
+    """
+    ext = Path(file.filename).suffix.lower() if file.filename else ""
+    allowed = {".mp4", ".webm", ".mp3", ".wav", ".m4a", ".ogg", ".flac", ".mkv", ".avi"}
+    if ext not in allowed:
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 파일 형식입니다: {ext}")
+
+    file_id = str(uuid.uuid4())[:8]
+    safe_name = f"{file_id}{ext}"
+    file_path = UPLOAD_DIR / safe_name
+
+    with open(file_path, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+
+    logger.info(f"📁 미디어 업로드: {file.filename} → {safe_name}")
+    return {
+        "media_url": f"/uploads/{safe_name}",
+        "file_id": file_id,
+        "filename": file.filename,
+    }
+
 
 if __name__ == "__main__":
     import uvicorn

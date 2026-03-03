@@ -346,8 +346,13 @@ function App() {
   const [videoId, setVideoId] = useState('');   // YouTube 영상 ID (URL에서 파싱, 링크 생성에 사용)
   const [error, setError] = useState('');        // 사용자에게 표시할 에러 메시지
   const [copied, setCopied] = useState(false);   // "복사됨" 피드백 표시 여부 (2초 후 자동 리셋)
+  const [localMediaUrl, setLocalMediaUrl] = useState('');  // 로컬 업로드 파일 재생 URL
+  const [localFileName, setLocalFileName] = useState('');  // 업로드된 파일명
+  const [uploadProgress, setUploadProgress] = useState(''); // 업로드/전사 진행 상태 메시지
+  const [isDragOverUpload, setIsDragOverUpload] = useState(false); // 드래그 오버 상태
+  const localFileInputRef = useRef<HTMLInputElement>(null);
   const [toastMessage, setToastMessage] = useState(''); // 토스트 메시지 (빈 문자열이면 숨김)
-  const toastTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const showToast = useCallback((msg: string, ms = 2000) => {
     clearTimeout(toastTimerRef.current);
     setToastMessage(msg);
@@ -994,6 +999,55 @@ function App() {
       setError(errorMessage);
     } finally {
       // 성공/실패 관계없이 로딩 상태 해제
+      setLoading(false);
+    }
+  };
+
+  // ─── 로컬 파일 업로드 핸들러 ─────────────────────────────────────
+  const handleLocalFileUpload = async (file: File) => {
+    const ext = file.name.split('.').pop()?.toLowerCase() || '';
+    const allowed = ['mp4', 'webm', 'mp3', 'wav', 'm4a', 'ogg', 'flac', 'mkv', 'avi'];
+    if (!allowed.includes(ext)) {
+      setError(`지원하지 않는 파일 형식입니다: .${ext}`);
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    setUploadProgress('파일 업로드 중...');
+    setLocalFileName(file.name);
+
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      setUploadProgress('AI 음성인식 전사 중... (파일 크기에 따라 수 분 소요)');
+
+      const res = await fetch('http://localhost:8000/upload-transcribe', {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: '업로드 실패' }));
+        throw new Error(err.detail || '업로드 실패');
+      }
+
+      const data = await res.json();
+      const fetchedSegs = data.segments || [];
+      setSegments(fetchedSegs);
+      originalSegmentsRef.current = fetchedSegs;
+      setTranscript(data.transcript);
+      setVideoId(data.video_id || '');
+      setLocalMediaUrl(`http://localhost:8000${data.media_url}`);
+      setUploadProgress('');
+      showToast(`✅ ${file.name} 전사 완료 (${fetchedSegs.length}개 세그먼트)`);
+
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '알 수 없는 오류';
+      setError(msg);
+      setUploadProgress('');
+    } finally {
       setLoading(false);
     }
   };
@@ -2179,6 +2233,66 @@ function App() {
               )}
             </AnimatePresence>
           </div>
+
+          {/* ── 로컬 파일 업로드 (첫 화면에서만) ── */}
+          {!hasResult && !loading && (
+            <motion.div
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.3, delay: 0.1 }}
+            >
+              <div className="upload-divider">
+                <span>또는</span>
+              </div>
+              <div
+                className={`upload-drop-zone${isDragOverUpload ? ' drag-over' : ''}`}
+                onClick={() => localFileInputRef.current?.click()}
+                onDragOver={(e) => { e.preventDefault(); setIsDragOverUpload(true); }}
+                onDragLeave={() => setIsDragOverUpload(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDragOverUpload(false);
+                  const file = e.dataTransfer.files[0];
+                  if (file) handleLocalFileUpload(file);
+                }}
+              >
+                <svg style={{ width: 28, height: 28, color: 'var(--text-muted)', marginBottom: 6 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+                <span className="upload-drop-text">로컬 영상/음성 파일을 드래그하거나 클릭하여 업로드</span>
+                <span className="upload-drop-formats">.mp4 .webm .mp3 .wav .m4a .ogg .flac</span>
+              </div>
+              <input
+                ref={localFileInputRef}
+                type="file"
+                accept=".mp4,.webm,.mp3,.wav,.m4a,.ogg,.flac,.mkv,.avi"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) handleLocalFileUpload(file);
+                  e.target.value = '';
+                }}
+              />
+            </motion.div>
+          )}
+
+          {/* 업로드 진행 상태 */}
+          <AnimatePresence>
+            {uploadProgress && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: 'auto' }}
+                exit={{ opacity: 0, height: 0 }}
+                className="upload-progress"
+              >
+                <Loader2 style={{ width: 14, height: 14, animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+                <span>{uploadProgress}</span>
+                {localFileName && <span className="upload-filename">{localFileName}</span>}
+              </motion.div>
+            )}
+          </AnimatePresence>
 
           {/* 에러 배너 */}
           <AnimatePresence>

@@ -1718,7 +1718,10 @@ function App() {
       barRadius: 2,
       normalize: true,
       interact: true,
-      hideScrollbar: true,
+      hideScrollbar: false,
+      autoScroll: true,
+      autoCenter: false,
+      minPxPerSec: 0, // 초기: 전체 뷰에 맞춤
       // audio는 재생하지 않음 — 비디오에서 소리 출력
       media: localVideoRef.current || undefined,
     });
@@ -1726,9 +1729,40 @@ function App() {
     ws.load(localMediaUrl);
     wavesurferRef.current = ws;
 
-    // 파형 클릭 시 비디오 동기화는 media 연결로 자동 처리됨
+    // Ctrl+휠 (또는 Shift+휠)로 가로 확대/축소 — 마우스 위치 기준
+    const container = waveformContainerRef.current;
+    const handleWheel = (e: WheelEvent) => {
+      const ws2 = wavesurferRef.current;
+      if (!ws2 || !container) return;
+      if (!(e.ctrlKey || e.shiftKey)) return;
+      e.preventDefault();
+
+      // 마우스 위치의 시간 계산
+      const wrapper = container.querySelector('div[data-testid="waveform"]') as HTMLElement
+        || container.firstElementChild as HTMLElement;
+      if (!wrapper) return;
+      const scrollLeft = wrapper.scrollLeft || 0;
+      const rect = container.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left; // 컨테이너 내 마우스 x
+      const duration = ws2.getDuration();
+      const currentZoom = ws2.options.minPxPerSec || (rect.width / duration);
+      const timeAtCursor = (scrollLeft + mouseX) / currentZoom;
+
+      // 줌 적용
+      const factor = e.deltaY < 0 ? 1.25 : 0.8;
+      const newZoom = Math.max(0, Math.min(800, currentZoom * factor));
+      ws2.zoom(newZoom);
+
+      // 줌 후 같은 시간이 커서 아래에 오도록 스크롤 보정
+      requestAnimationFrame(() => {
+        const newScrollLeft = timeAtCursor * newZoom - mouseX;
+        if (wrapper.scrollTo) wrapper.scrollTo({ left: Math.max(0, newScrollLeft) });
+      });
+    };
+    container?.addEventListener('wheel', handleWheel, { passive: false });
 
     return () => {
+      container?.removeEventListener('wheel', handleWheel);
       ws.destroy();
       wavesurferRef.current = null;
     };

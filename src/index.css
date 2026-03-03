@@ -2585,6 +2585,19 @@ input.seg-edit-text:focus {
   overflow: hidden;
   cursor: pointer;
 }
+.waveform-container ::-webkit-scrollbar {
+  height: 5px;
+}
+.waveform-container ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.waveform-container ::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+.waveform-container ::-webkit-scrollbar-thumb:hover {
+  background: var(--brand);
+}
 .waveform-resize-handle {
   height: 6px;
   cursor: row-resize;

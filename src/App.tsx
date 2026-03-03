@@ -25,6 +25,7 @@ import { englishToKorean } from './engToKor';
 import Fuse from 'fuse.js';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
+import TimelinePlugin from 'wavesurfer.js/dist/plugins/timeline.esm.js';
 
 // ─── 한글 자모 분해 (오타/미완성 입력 대응) ─────────────────────────
 const INITIALS = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
@@ -1733,6 +1734,17 @@ function App() {
     const regionsPlugin = ws.registerPlugin(RegionsPlugin.create());
     wsRegionsRef.current = regionsPlugin;
 
+    // Timeline 플러그인 등록 (하단 시간 눈금자)
+    ws.registerPlugin(TimelinePlugin.create({
+      timeInterval: 1,
+      primaryLabelInterval: 5,
+      style: {
+        fontSize: '10px',
+        color: 'rgba(255,255,255,0.4)',
+      },
+      secondaryLabelOpacity: 0.3,
+    }));
+
     // 마커 드래그 완료 → 세그먼트 시간 업데이트 (제한 규칙 적용)
     const MIN_GAP = 0.05; // 최소 간격 (초)
     regionsPlugin.on('region-updated', (region: any) => {
@@ -1856,14 +1868,25 @@ function App() {
     });
     // 세그먼트 시작점마다 빨간 마커 추가
     segments.forEach((seg, i) => {
-      // ▼ 마커 엘리먼트 — 크게, 잡기 쉽게
-      const marker = document.createElement('span');
-      marker.textContent = '\u25BC';
-      marker.style.cssText = 'color:#ef4444;font-size:14px;position:absolute;top:-2px;left:50%;transform:translateX(-50%);line-height:1;cursor:grab;text-shadow:0 0 4px rgba(0,0,0,0.8);z-index:10;padding:4px;';
+      // 마커 컨테이너 (시간 라벨 + ▼)
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = 'position:absolute;top:2px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;cursor:grab;z-index:10;pointer-events:auto;';
+      // 시간 라벨
+      const timeLabel = document.createElement('span');
+      const m = Math.floor(seg.start / 60);
+      const s = seg.start % 60;
+      timeLabel.textContent = m > 0 ? `${m}:${s.toFixed(1).padStart(4, '0')}` : `${s.toFixed(1)}s`;
+      timeLabel.style.cssText = 'font-size:9px;color:rgba(255,255,255,0.7);white-space:nowrap;text-shadow:0 0 3px rgba(0,0,0,0.9);line-height:1;margin-bottom:1px;';
+      // ▼ 삼각형
+      const arrow = document.createElement('span');
+      arrow.textContent = '\u25BC';
+      arrow.style.cssText = 'color:#ef4444;font-size:14px;line-height:1;text-shadow:0 0 4px rgba(0,0,0,0.8);';
+      wrapper.appendChild(timeLabel);
+      wrapper.appendChild(arrow);
       const region = rp.addRegion({
         id: `seg-${i}`,
         start: seg.start,
-        content: marker,
+        content: wrapper,
         color: 'rgba(0,0,0,0)',
         drag: true,
         resize: false,
@@ -3169,8 +3192,8 @@ function App() {
               )}
               {/* 파형 시각화 (로컬 미디어) */}
               {localMediaUrl && (
-                <div className="waveform-wrap" style={{ height: waveformHeight + 28 }}>
-                  <div ref={waveformContainerRef} className="waveform-container" style={{ height: waveformHeight + 20 }} />
+                <div className="waveform-wrap" style={{ height: waveformHeight + 50 }}>
+                  <div ref={waveformContainerRef} className="waveform-container" style={{ height: waveformHeight + 42 }} />
                 </div>
               )}
               {/* 파형 없으면: 구분선(영상↔자막), 파형 있으면: 구분선2(파형↔자막) */}

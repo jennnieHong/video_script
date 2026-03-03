@@ -262,8 +262,9 @@ h1, h2, h3, h4 {
   border-left: none;
 }
 
-/* 드래그 리사이즈 중 iframe이 마우스 이벤트를 가로채지 않도록 차단 */
-body.is-resizing iframe {
+/* 드래그 리사이즈 중 iframe/video가 마우스 이벤트를 가로채지 않도록 차단 */
+body.is-resizing iframe,
+body.is-resizing video {
   pointer-events: none !important;
 }
 
@@ -2583,4 +2584,23 @@ input.seg-edit-text:focus {
   border-radius: 0.375rem;
   overflow: hidden;
   cursor: pointer;
+}
+.waveform-resize-handle {
+  height: 6px;
+  cursor: row-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 0.2rem;
+}
+.waveform-resize-handle::after {
+  content: '';
+  width: 36px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  transition: background 0.15s;
+}
+.waveform-resize-handle:hover::after {
+  background: var(--brand);
 }

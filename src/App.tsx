@@ -357,6 +357,7 @@ function App() {
   const [markOut, setMarkOut] = useState<number | null>(null);   // 수동 자막: 끝(Out) 마커 시간
   const wavesurferRef = useRef<WaveSurfer | null>(null);         // WaveSurfer 인스턴스
   const waveformContainerRef = useRef<HTMLDivElement>(null);      // 파형 DOM 컨테이너
+  const [waveformHeight, setWaveformHeight] = useState(64);       // 파형 높이 (px, 드래그 리사이즈)
   const [toastMessage, setToastMessage] = useState(''); // 토스트 메시지 (빈 문자열이면 숨김)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const showToast = useCallback((msg: string, ms = 2000) => {
@@ -613,6 +614,32 @@ function App() {
   const resetLayout = () => {
     setLayoutSizes({ ...LAYOUT_DEFAULTS });
     localStorage.removeItem('ys-layout');
+  };
+
+  /** 파형 높이 드래그 리사이즈 */
+  const handleWaveformResizeStart = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startY = e.clientY;
+    const startH = waveformHeight;
+    document.body.classList.add('is-resizing');
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    const onMove = (ev: MouseEvent) => {
+      // 위로 드래그 → 높이 증가 (핸들이 상단이므로)
+      const newH = Math.max(40, Math.min(300, startH + (startY - ev.clientY)));
+      setWaveformHeight(newH);
+      wavesurferRef.current?.setOptions({ height: newH });
+    };
+    const onUp = () => {
+      document.body.classList.remove('is-resizing');
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
   };
 
   // ─── 대본 저장/불러오기 state ────────────────────────────────────
@@ -1685,7 +1712,7 @@ function App() {
       progressColor: 'rgba(99, 102, 241, 0.8)',
       cursorColor: '#6366f1',
       cursorWidth: 2,
-      height: 64,
+      height: waveformHeight,
       barWidth: 2,
       barGap: 1,
       barRadius: 2,
@@ -2992,6 +3019,7 @@ function App() {
               {/* 파형 시각화 (로컬 미디어) */}
               {localMediaUrl && (
                 <div className="waveform-wrap">
+                  <div className="waveform-resize-handle" onMouseDown={handleWaveformResizeStart} />
                   <div ref={waveformContainerRef} className="waveform-container" />
                 </div>
               )}

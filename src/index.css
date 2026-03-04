@@ -1954,9 +1954,14 @@ body.is-resizing video {
   box-sizing: border-box;
   display: inline-flex;
   align-items: center;
+  gap: 0.15rem;
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.15s, color 0.15s;
+}
+.seg-time-sep {
+  opacity: 0.4;
+  font-size: 0.6rem;
 }
 
 .seg-timestamp:hover {

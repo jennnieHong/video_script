@@ -3968,7 +3968,7 @@ function App() {
                             onClick={(e) => { if (isSeekModeRef.current) e.stopPropagation(); openYouTubeAtTime(i, seg.start); }}
                             title={loopMode ? '클릭 → 이 세그먼트 재생' : '클릭 → YouTube에서 열기'}
                           >
-                            {formatTimestamp(seg.start)}
+                            {formatTimestamp(seg.start)}<span className="seg-time-sep">~</span>{formatTimestamp(seg.start + seg.duration)}
                           </button>
                           <input
                             key={`time-${i}-${segmentsVersion}`}

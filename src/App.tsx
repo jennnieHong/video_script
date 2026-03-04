@@ -26,6 +26,7 @@ import Fuse from 'fuse.js';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 import TimelinePlugin from 'wavesurfer.js/dist/plugins/timeline.esm.js';
+import MinimapPlugin from 'wavesurfer.js/dist/plugins/minimap.esm.js';
 
 // ─── 한글 자모 분해 (오타/미완성 입력 대응) ─────────────────────────
 const INITIALS = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
@@ -361,6 +362,7 @@ function App() {
   const waveformContainerRef = useRef<HTMLDivElement>(null);      // 파형 DOM 컨테이너
   const wsRegionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null);
   const wsTimelineRef = useRef<ReturnType<typeof TimelinePlugin.create> | null>(null);
+  const wsMinimapRef = useRef<ReturnType<typeof MinimapPlugin.create> | null>(null);
 
   // 줌 레벨(pxPerSec)에 따른 타임라인 간격 계산 헬퍼
   const getTimelineIntervals = useCallback((pxPerSec: number) => {
@@ -389,6 +391,7 @@ function App() {
   }, [getTimelineIntervals]);
   const [waveformReady, setWaveformReady] = useState(false);      // 파형 로딩 완료 여부
   const [waveformHeight, setWaveformHeight] = useState(64);       // 파형 높이 (px, 드래그 리사이즈)
+  const [minimapHeight, setMinimapHeight] = useState(24);         // 미니맵 높이 (px)
   const [toastMessage, setToastMessage] = useState(''); // 토스트 메시지 (빈 문자열이면 숨김)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const showToast = useCallback((msg: string, ms = 2000) => {
@@ -1765,6 +1768,8 @@ function App() {
     const initPxPerSec = ws.options.minPxPerSec || 0;
     recreateTimeline(ws, initPxPerSec);
 
+    // Minimap은 별도 useEffect에서 관리 (minimapHeight 변경 시 재생성)
+
     // 마커 드래그 완료 → 세그먼트 시간 업데이트 (제한 규칙 적용)
     const MIN_GAP = 0.05; // 최소 간격 (초)
     regionsPlugin.on('region-updated', (region: any) => {
@@ -1904,6 +1909,208 @@ function App() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localMediaUrl]);
+
+  // ─── 미니맵 높이 변경 시 플러그인 재생성 ────────────────────
+  useEffect(() => {
+    const ws = wavesurferRef.current;
+    if (!ws || !waveformReady || !waveformContainerRef.current) return;
+    // 기존 미니맵 제거
+    if (wsMinimapRef.current) {
+      try { wsMinimapRef.current.destroy(); } catch { /* ignore */ }
+      wsMinimapRef.current = null;
+    }
+    // 새 미니맵 생성
+    const mm = ws.registerPlugin(MinimapPlugin.create({
+      height: minimapHeight,
+      waveColor: 'rgba(99, 102, 241, 0.25)',
+      progressColor: 'rgba(99, 102, 241, 0.5)',
+      overlayColor: 'rgba(0, 0, 0, 0.55)',
+      container: waveformContainerRef.current,
+      insertPosition: 'afterend' as InsertPosition,
+    }));
+    wsMinimapRef.current = mm;
+
+    // 미니맵 클릭 시 해당 지점을 뷰포트 중앙에 배치
+    mm.on('click', (relativeX: number) => {
+      const duration = ws.getDuration() || 1;
+      const clickedTime = relativeX * duration;
+      ws.seekTo(relativeX);
+
+      const centerScroll = () => {
+        const wrapper = (ws as any).renderer?.wrapper || ws.getWrapper?.();
+        if (!wrapper) return;
+        const containerWidth = waveformContainerRef.current?.clientWidth || wrapper.clientWidth;
+        const pxPerSec = ws.options.minPxPerSec || (containerWidth / duration);
+        const clickedPx = clickedTime * pxPerSec;
+        wrapper.scrollLeft = Math.max(0, clickedPx - containerWidth / 2);
+      };
+      centerScroll();
+      setTimeout(centerScroll, 50);
+      setTimeout(centerScroll, 150);
+    });
+
+    // ─── 미니맵 오버레이 드래그 → 메인 파형 스크롤 ─────────────
+    // 잠시 후 미니맵 DOM이 렌더된 뒤에 오버레이를 찾아 드래그 핸들러 부착
+    let dragCleanup: (() => void) | null = null;
+
+    setTimeout(() => {
+      const minimapWrap = waveformContainerRef.current?.parentElement?.querySelector('[part="minimap"]') as HTMLElement | null;
+      if (!minimapWrap) return;
+      const overlay = minimapWrap.querySelector('[part="minimap-overlay"]') as HTMLElement | null;
+      if (!overlay) return;
+
+      // overlay 활성화: 이벤트 수신 + 최상위 배치
+      overlay.style.pointerEvents = 'auto';
+      overlay.style.zIndex = '10';
+      overlay.style.cursor = 'grab';
+
+      const EDGE_PX = 8;
+      type DragMode = 'none' | 'scroll' | 'resize-left' | 'resize-right';
+      let mode: DragMode = 'none';
+      let startX = 0;
+      let startScrollLeft = 0;
+      let startPxPerSec = 0;
+      let scrollRatio = 1;
+      let rightEdgeTime = 0;
+      let leftEdgeTime = 0;
+      let targetZoom = 0;
+
+      // 스크롤 컨테이너 찾기 (wrapper의 부모 = overflow-x 스크롤 요소)
+      const getScrollContainer = (): HTMLElement | null => {
+        // renderer.wrapper는 .wrapper (내부 요소), 스크롤은 그 부모 .scroll에서 발생
+        const wrapper = (ws as any).renderer?.wrapper as HTMLElement | undefined;
+        if (wrapper?.parentElement) return wrapper.parentElement;
+        // fallback: waveformContainer 내부 첫 자식의 shadowRoot에서 scroll 찾기
+        const firstChild = waveformContainerRef.current?.firstElementChild;
+        const shadow = firstChild?.shadowRoot;
+        if (shadow) {
+          return shadow.querySelector('[part="scroll"]') as HTMLElement;
+        }
+        return waveformContainerRef.current?.firstElementChild as HTMLElement;
+      };
+
+      const detectEdge = (clientX: number): DragMode => {
+        const rect = overlay!.getBoundingClientRect();
+        if (clientX - rect.left < EDGE_PX) return 'resize-left';
+        if (rect.right - clientX < EDGE_PX) return 'resize-right';
+        return 'scroll';
+      };
+
+      // 호버 커서
+      overlay.addEventListener('pointermove', (e: PointerEvent) => {
+        if (mode !== 'none') return;
+        const edge = detectEdge(e.clientX);
+        overlay!.style.cursor = edge === 'scroll' ? 'grab' : 'ew-resize';
+      });
+
+      // pointerdown → 드래그 시작
+      const onDown = (e: PointerEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+
+        mode = detectEdge(e.clientX);
+        startX = e.clientX;
+        const mainWrapper = getScrollContainer();
+        startScrollLeft = mainWrapper?.scrollLeft ?? 0;
+
+        const duration = ws.getDuration() || 1;
+        const containerWidth = waveformContainerRef.current?.clientWidth || 1;
+        startPxPerSec = ws.options.minPxPerSec || (containerWidth / duration);
+        leftEdgeTime = startScrollLeft / startPxPerSec;
+        rightEdgeTime = (startScrollLeft + containerWidth) / startPxPerSec;
+        targetZoom = startPxPerSec;
+
+        if (mode === 'scroll') {
+          const totalWidth = duration * startPxPerSec;
+          scrollRatio = totalWidth / minimapWrap!.clientWidth;
+          overlay!.style.cursor = 'grabbing';
+        } else {
+          overlay!.style.cursor = 'ew-resize';
+        }
+
+        // setPointerCapture: 이후 모든 pointermove가 overlay로 전달됨
+        overlay!.setPointerCapture(e.pointerId);
+        ws.setOptions({ autoScroll: false });
+      };
+
+      const onMove = (e: PointerEvent) => {
+        if (mode === 'none') return;
+        e.preventDefault();
+        const dx = e.clientX - startX;
+        const duration = ws.getDuration() || 1;
+        const containerWidth = waveformContainerRef.current?.clientWidth || 1;
+        const minimapWidth = minimapWrap!.clientWidth;
+        const mainWrapper = getScrollContainer();
+
+        if (mode === 'scroll' && mainWrapper) {
+          mainWrapper.scrollLeft = Math.max(0, startScrollLeft + dx * scrollRatio);
+        } else if (mode === 'resize-left' || mode === 'resize-right') {
+          const currentOverlayWidth = (containerWidth / (duration * startPxPerSec)) * minimapWidth;
+          const newOverlayWidth = Math.max(20,
+            mode === 'resize-right'
+              ? currentOverlayWidth + dx
+              : currentOverlayWidth - dx
+          );
+          const newVisibleDuration = (newOverlayWidth / minimapWidth) * duration;
+          targetZoom = Math.max(1, Math.min(800, containerWidth / newVisibleDuration));
+        }
+      };
+
+      const onUp = (e: PointerEvent) => {
+        if (mode === 'none') return;
+        const prevMode = mode;
+        mode = 'none';
+        overlay!.style.cursor = 'grab';
+        overlay!.releasePointerCapture(e.pointerId);
+
+        // 리사이즈: 드랍 시점에만 줌 적용
+        if ((prevMode === 'resize-left' || prevMode === 'resize-right') && targetZoom > 0) {
+          const containerWidth = waveformContainerRef.current?.clientWidth || 1;
+          ws.zoom(targetZoom);
+          recreateTimeline(ws, targetZoom);
+          const mainWrapper = getScrollContainer();
+          if (mainWrapper) {
+            // resize-left: 오른쪽 끝 고정, resize-right: 왼쪽 끝 고정
+            const newScroll = prevMode === 'resize-left'
+              ? Math.max(0, rightEdgeTime * targetZoom - containerWidth)
+              : Math.max(0, leftEdgeTime * targetZoom);
+            mainWrapper.scrollLeft = newScroll;
+            requestAnimationFrame(() => { mainWrapper.scrollLeft = newScroll; });
+          }
+        }
+
+        ws.setOptions({ autoScroll: true });
+      };
+
+      overlay.addEventListener('pointerdown', onDown);
+      overlay.addEventListener('pointermove', onMove);
+      overlay.addEventListener('pointerup', onUp);
+      overlay.addEventListener('pointercancel', onUp);
+
+      // 오버레이 클릭 시 내부 WaveSurfer seek 차단 (click은 pointerdown 후 발생)
+      const onCapClick = (e: MouseEvent) => {
+        const rect = overlay!.getBoundingClientRect();
+        if (e.clientX >= rect.left && e.clientX <= rect.right &&
+            e.clientY >= rect.top && e.clientY <= rect.bottom) {
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }
+      };
+      minimapWrap.addEventListener('click', onCapClick, true);
+
+      dragCleanup = () => {
+        overlay!.removeEventListener('pointerdown', onDown);
+        overlay!.removeEventListener('pointermove', onMove);
+        overlay!.removeEventListener('pointerup', onUp);
+        overlay!.removeEventListener('pointercancel', onUp);
+        minimapWrap!.removeEventListener('click', onCapClick, true);
+      };
+    }, 500);
+
+    return () => { dragCleanup?.(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [minimapHeight, waveformReady]);
 
   // ─── 세그먼트 ↔ 파형 마커 동기화 (전체 균등 샘플링, 줌 비례 밀도) ──
   // WaveSurfer Region은 시간 기반 배치 → 스크롤/줌에 관계없이 올바른 위치에 표시.
@@ -3279,8 +3486,9 @@ function App() {
               )}
               {/* 파형 시각화 (로컬 미디어) */}
               {localMediaUrl && (
-                <div className="waveform-wrap" style={{ height: waveformHeight + 72 }}>
+                <div className="waveform-wrap" style={{ padding: '0.25rem 0.5rem 0' }}>
                   <div ref={waveformContainerRef} className="waveform-container" style={{ height: waveformHeight + 64 }} />
+                  {/* Minimap은 WaveSurfer 플러그인이 insertPosition='afterend'로 waveform-container 뒤에 자동 삽입 */}
                 </div>
               )}
               {/* 파형 없으면: 구분선(영상↔자막), 파형 있으면: 구분선2(파형↔자막) */}
@@ -3526,6 +3734,21 @@ function App() {
                             </motion.div>
                           )}
                         </AnimatePresence>
+
+                        {/* 미니맵 높이 조절 (로컬 미디어일 때만) */}
+                        {localMediaUrl && (
+                          <label className="control-row" style={{ flexDirection: 'column', alignItems: 'flex-start', gap: 4, padding: '0.25rem 0.5rem' }}>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>미니맵 높이: {minimapHeight}px</span>
+                            <input
+                              type="range"
+                              min={10}
+                              max={60}
+                              value={minimapHeight}
+                              onChange={e => setMinimapHeight(parseInt(e.target.value))}
+                              style={{ width: '100%', accentColor: 'var(--brand)' }}
+                            />
+                          </label>
+                        )}
 
                         {/* 줄바꿈 토글 */}
                         <label className="control-row" style={{ cursor: 'pointer' }}>

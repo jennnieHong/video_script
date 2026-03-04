@@ -312,16 +312,18 @@ async def download_clip(request: ClipRequest, background_tasks: BackgroundTasks)
     try:
         # ── 1단계: yt-dlp로 영상 다운로드 (전체) ───────────────────
         # quality 파라미터에 따른 yt-dlp format 문자열 생성
+        # H.264(avc1) 코덱 우선 → MP4 네이티브, 색감 보존
         QUALITY_MAP = {
-            '360':  'best[height<=360][ext=mp4]/best[height<=360]/bestvideo[height<=360][ext=mp4]+bestaudio/best',
-            '480':  'best[height<=480][ext=mp4]/best[height<=480]/bestvideo[height<=480][ext=mp4]+bestaudio/best',
-            '720':  'best[height<=720][ext=mp4]/best[height<=720]/bestvideo[height<=720][ext=mp4]+bestaudio/best',
-            '1080': 'best[height<=1080][ext=mp4]/best[height<=1080]/bestvideo[height<=1080][ext=mp4]+bestaudio/best',
-            'best': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            '360':  'bestvideo[vcodec^=avc1][height<=360]+bestaudio[acodec^=mp4a]/best[height<=360]/best',
+            '480':  'bestvideo[vcodec^=avc1][height<=480]+bestaudio[acodec^=mp4a]/best[height<=480]/best',
+            '720':  'bestvideo[vcodec^=avc1][height<=720]+bestaudio[acodec^=mp4a]/best[height<=720]/best',
+            '1080': 'bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/best[height<=1080]/best',
+            'best': 'bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/best',
         }
         fmt = QUALITY_MAP.get(quality, QUALITY_MAP['720'])
         ydl_opts = {
             'format': fmt,
+            'merge_output_format': 'mp4',  # 항상 MP4로 머지
             'outtmpl': raw_path,
             'quiet': True,
             'no_warnings': True,
@@ -364,7 +366,7 @@ async def download_clip(request: ClipRequest, background_tasks: BackgroundTasks)
                 clip_path,
             ]
         else:
-            # 일반 구간 자르기 (재인코딩 없음 → 빠름)
+            # 일반 구간 자르기 (스트림 복사 → 즉시, 색 공간 메타데이터 태깅)
             cmd = [
                 ffmpeg_exe,
                 "-y",
@@ -373,12 +375,16 @@ async def download_clip(request: ClipRequest, background_tasks: BackgroundTasks)
                 "-t", str(duration),
                 "-c:v", "copy",
                 "-c:a", "copy",
+                "-colorspace", "bt709",
+                "-color_trc", "bt709",
+                "-color_primaries", "bt709",
                 "-avoid_negative_ts", "make_zero",
                 clip_path,
             ]
 
         logger.info(f"✂️ ffmpeg 구간 자르기: {start}s ~ {end}s")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        timeout = max(120, int(duration) + 60)  # 영상 길이 + 여유
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if result.returncode != 0:
             logger.error(f"ffmpeg stderr: {result.stderr}")
             raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
@@ -480,14 +486,15 @@ async def clip_with_burned_subs(request: BurnSubsRequest, background_tasks: Back
         # ── 2단계: yt-dlp 다운로드 ───────────────────────────────
         q = request.quality if request.quality != "vertical" else "720"
         QMAP = {
-            "360":  "best[height<=360][ext=mp4]/best[height<=360]/best",
-            "480":  "best[height<=480][ext=mp4]/best[height<=480]/best",
-            "720":  "best[height<=720][ext=mp4]/best[height<=720]/best",
-            "1080": "best[height<=1080][ext=mp4]/best[height<=1080]/best",
-            "best": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best",
+            "360":  "bestvideo[vcodec^=avc1][height<=360]+bestaudio[acodec^=mp4a]/best[height<=360]/best",
+            "480":  "bestvideo[vcodec^=avc1][height<=480]+bestaudio[acodec^=mp4a]/best[height<=480]/best",
+            "720":  "bestvideo[vcodec^=avc1][height<=720]+bestaudio[acodec^=mp4a]/best[height<=720]/best",
+            "1080": "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/best[height<=1080]/best",
+            "best": "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/best",
         }
         ydl_opts = {
             "format": QMAP.get(q, QMAP["720"]),
+            "merge_output_format": "mp4",
             "outtmpl": raw_path,
             "quiet": True,
             "no_warnings": True,
@@ -546,7 +553,10 @@ async def clip_with_burned_subs(request: BurnSubsRequest, background_tasks: Back
             "-i", raw_path,
             "-t", str(duration),
             "-vf", vf,
-            "-c:v", "libx264", "-crf", "23", "-preset", "fast",
+            "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+            "-colorspace", "bt709",
+            "-color_trc", "bt709",
+            "-color_primaries", "bt709",
             "-c:a", "aac",
             "-avoid_negative_ts", "make_zero",
             clip_path,

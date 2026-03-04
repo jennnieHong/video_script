@@ -2587,7 +2587,7 @@ input.seg-edit-text:focus {
 }
 .waveform-container {
   border-radius: 0.375rem;
-  overflow: auto;
+  overflow: visible;
   cursor: pointer;
 }
 .waveform-container ::-webkit-scrollbar {
@@ -2613,6 +2613,7 @@ input.seg-edit-text:focus {
 /* wavesurfer 내부 스크롤 요소 overflow 강제 */
 .waveform-container > div {
   overflow-x: auto !important;
+  overflow-y: visible !important;
 }
 .waveform-resize-handle {
   height: 6px;

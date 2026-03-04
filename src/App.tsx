@@ -360,6 +360,33 @@ function App() {
   const wavesurferRef = useRef<WaveSurfer | null>(null);         // WaveSurfer 인스턴스
   const waveformContainerRef = useRef<HTMLDivElement>(null);      // 파형 DOM 컨테이너
   const wsRegionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null);
+  const wsTimelineRef = useRef<ReturnType<typeof TimelinePlugin.create> | null>(null);
+
+  // 줌 레벨(pxPerSec)에 따른 타임라인 간격 계산 헬퍼
+  const getTimelineIntervals = useCallback((pxPerSec: number) => {
+    if (pxPerSec >= 100) return { timeInterval: 0.5, primaryLabelInterval: 2 };
+    if (pxPerSec >= 50)  return { timeInterval: 1,   primaryLabelInterval: 5 };
+    if (pxPerSec >= 20)  return { timeInterval: 5,   primaryLabelInterval: 10 };
+    if (pxPerSec >= 5)   return { timeInterval: 10,  primaryLabelInterval: 30 };
+    return { timeInterval: 30, primaryLabelInterval: 60 };
+  }, []);
+
+  /** Timeline 플러그인을 (재)생성 — 줌 변경 시 호출 */
+  const recreateTimeline = useCallback((ws: WaveSurfer, pxPerSec: number) => {
+    // 기존 타임라인 제거
+    if (wsTimelineRef.current) {
+      try { wsTimelineRef.current.destroy(); } catch { /* ignore */ }
+      wsTimelineRef.current = null;
+    }
+    const { timeInterval, primaryLabelInterval } = getTimelineIntervals(pxPerSec);
+    const tl = ws.registerPlugin(TimelinePlugin.create({
+      timeInterval,
+      primaryLabelInterval,
+      style: { fontSize: '10px', color: 'rgba(255,255,255,0.4)' },
+      secondaryLabelOpacity: 0.25,
+    }));
+    wsTimelineRef.current = tl;
+  }, [getTimelineIntervals]);
   const [waveformReady, setWaveformReady] = useState(false);      // 파형 로딩 완료 여부
   const [waveformHeight, setWaveformHeight] = useState(64);       // 파형 높이 (px, 드래그 리사이즈)
   const [toastMessage, setToastMessage] = useState(''); // 토스트 메시지 (빈 문자열이면 숨김)
@@ -1734,16 +1761,9 @@ function App() {
     const regionsPlugin = ws.registerPlugin(RegionsPlugin.create());
     wsRegionsRef.current = regionsPlugin;
 
-    // Timeline 플러그인 등록 (하단 시간 눈금자)
-    ws.registerPlugin(TimelinePlugin.create({
-      timeInterval: 1,
-      primaryLabelInterval: 5,
-      style: {
-        fontSize: '10px',
-        color: 'rgba(255,255,255,0.4)',
-      },
-      secondaryLabelOpacity: 0.3,
-    }));
+    // Timeline 플러그인 등록 (하단 시간 눈금자 — 초기 줌 레벨 기준)
+    const initPxPerSec = ws.options.minPxPerSec || 0;
+    recreateTimeline(ws, initPxPerSec);
 
     // 마커 드래그 완료 → 세그먼트 시간 업데이트 (제한 규칙 적용)
     const MIN_GAP = 0.05; // 최소 간격 (초)
@@ -1821,6 +1841,7 @@ function App() {
         const scrollEl = (ws as any).renderer?.wrapper || ws.getWrapper?.() || waveformContainerRef.current?.firstElementChild;
         if (scrollEl) {
           scrollEl.style.overflowX = 'auto';
+          scrollEl.style.overflowY = 'visible';
           scrollEl.style.scrollbarWidth = 'thin';
           scrollEl.style.scrollbarColor = 'rgba(99,102,241,0.5) transparent';
         }
@@ -1858,12 +1879,15 @@ function App() {
       const factor = e.deltaY < 0 ? 1.25 : 0.8;
       const newZoom = Math.max(0, Math.min(800, currentZoom * factor));
       ws2.zoom(newZoom);
+      // 줌 레벨에 맞게 타임라인 간격 재생성
+      recreateTimeline(ws2, newZoom);
       requestAnimationFrame(() => {
         // 줌 후 스크롤 위치 보정
         const newScrollLeft = timeAtCursor * newZoom - mouseX;
         if (wrapper.scrollTo) wrapper.scrollTo({ left: Math.max(0, newScrollLeft) });
         // 줌 후 스크롤바 강제 표시
         wrapper.style.overflowX = 'auto';
+        wrapper.style.overflowY = 'visible';
         wrapper.style.scrollbarWidth = 'thin';
         wrapper.style.scrollbarColor = 'rgba(99,102,241,0.5) transparent';
       });
@@ -1881,40 +1905,80 @@ function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [localMediaUrl]);
 
-  // ─── 세그먼트 ↔ 파형 마커 동기화 ─────────────────────────────
+  // ─── 세그먼트 ↔ 파형 마커 동기화 (전체 균등 샘플링, 줌 비례 밀도) ──
+  // WaveSurfer Region은 시간 기반 배치 → 스크롤/줌에 관계없이 올바른 위치에 표시.
+  // 줌 배율이 높을수록 마커 수를 비례적으로 늘려 더 상세하게 표시.
+  const BASE_MARKERS = 50; // 기본 줌(전체 보기)일 때 마커 수
+  const [markerZoom, setMarkerZoom] = useState(1); // 줌 배율 (1 = 전체 보기)
+
+  // 줌 이벤트 → markerZoom 갱신
+  useEffect(() => {
+    const ws = wavesurferRef.current;
+    if (!ws || !waveformReady) return;
+
+    const onZoom = () => {
+      const duration = ws.getDuration() || 1;
+      const container = waveformContainerRef.current;
+      const containerWidth = container?.clientWidth || 1;
+      const pxPerSec = ws.options.minPxPerSec || (containerWidth / duration);
+      const baseZoom = containerWidth / duration; // 전체 보기 시 pxPerSec
+      const factor = Math.max(1, pxPerSec / baseZoom);
+      setMarkerZoom(factor);
+    };
+
+    ws.on('zoom', onZoom);
+    return () => { ws.un('zoom', onZoom); };
+  }, [waveformReady]);
+
+  // 마커 생성 (segments·markerZoom이 바뀔 때마다)
   useEffect(() => {
     const rp = wsRegionsRef.current;
     if (!rp || !localMediaUrl || !waveformReady) return;
-    // 기존 마커 제거
+
+    // 기존 마커 전부 제거
     rp.getRegions().forEach((r: any) => {
       if (r.id?.startsWith('seg-')) r.remove();
     });
-    // 세그먼트 시작점마다 빨간 마커 추가
-    segments.forEach((seg, i) => {
-      // 마커 컨테이너 (시간 라벨 + ▼)
+    if (segments.length === 0) return;
+
+    // 줌 배율에 비례한 마커 수 (최소 BASE_MARKERS, 최대 segments.length)
+    const markerCount = Math.min(segments.length, Math.round(BASE_MARKERS * markerZoom));
+
+    // 전체 세그먼트에서 균등 샘플링
+    const indices: number[] = [];
+    if (segments.length <= markerCount) {
+      for (let i = 0; i < segments.length; i++) indices.push(i);
+    } else {
+      const step = (segments.length - 1) / (markerCount - 1);
+      const picked = new Set<number>();
+      for (let k = 0; k < markerCount; k++) picked.add(Math.round(k * step));
+      picked.forEach(i => indices.push(i));
+      indices.sort((a, b) => a - b);
+    }
+
+    // 샘플링된 마커만 Region으로 추가
+    indices.forEach(idx => {
+      const seg = segments[idx];
       const wrapper = document.createElement('div');
       wrapper.style.cssText = 'position:absolute;top:2px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;cursor:grab;z-index:10;pointer-events:auto;';
-      // 시간 라벨
       const timeLabel = document.createElement('span');
       const m = Math.floor(seg.start / 60);
       const s = seg.start % 60;
       timeLabel.textContent = m > 0 ? `${m}:${s.toFixed(1).padStart(4, '0')}` : `${s.toFixed(1)}s`;
       timeLabel.style.cssText = 'font-size:9px;color:rgba(255,255,255,0.7);white-space:nowrap;text-shadow:0 0 3px rgba(0,0,0,0.9);line-height:1;margin-bottom:1px;';
-      // ▼ 삼각형
       const arrow = document.createElement('span');
       arrow.textContent = '\u25BC';
       arrow.style.cssText = 'color:#ef4444;font-size:14px;line-height:1;text-shadow:0 0 4px rgba(0,0,0,0.8);';
       wrapper.appendChild(timeLabel);
       wrapper.appendChild(arrow);
       const region = rp.addRegion({
-        id: `seg-${i}`,
+        id: `seg-${idx}`,
         start: seg.start,
         content: wrapper,
         color: 'rgba(0,0,0,0)',
         drag: true,
         resize: false,
       });
-      // 점선 스타일 강제 적용 (classList + inline 이중 적용)
       const el = region.element as HTMLElement | undefined;
       if (el) {
         el.classList.add('wf-seg-marker');
@@ -1926,7 +1990,7 @@ function App() {
       }
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [segments, localMediaUrl, waveformReady]);
+  }, [segments, localMediaUrl, waveformReady, markerZoom]);
 
   useEffect(() => {
     // 트래킹 모드 꺼져 있거나 세그먼트 없으면 종료
@@ -3215,8 +3279,8 @@ function App() {
               )}
               {/* 파형 시각화 (로컬 미디어) */}
               {localMediaUrl && (
-                <div className="waveform-wrap" style={{ height: waveformHeight + 50 }}>
-                  <div ref={waveformContainerRef} className="waveform-container" style={{ height: waveformHeight + 42 }} />
+                <div className="waveform-wrap" style={{ height: waveformHeight + 72 }}>
+                  <div ref={waveformContainerRef} className="waveform-container" style={{ height: waveformHeight + 64 }} />
                 </div>
               )}
               {/* 파형 없으면: 구분선(영상↔자막), 파형 있으면: 구분선2(파형↔자막) */}

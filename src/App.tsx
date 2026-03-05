@@ -2473,6 +2473,8 @@ function App() {
   // ─── 글로벌 단축키 (스페이스바 + I/O 마커) ──────────────────────
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      // 키 반복 방지 (길게 누를 때 연타 방지)
+      if (e.repeat) return;
       // input, textarea, select에 포커스 시에는 텍스트 입력 우선
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
@@ -3531,6 +3533,7 @@ function App() {
                       ref={localVideoRef}
                       src={localMediaUrl}
                       controls
+                      onKeyDown={(e) => { if (e.code === 'Space') e.preventDefault(); }}
                       style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000', borderRadius: '0.5rem' }}
                     />
                   </div>

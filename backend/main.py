@@ -1,6 +1,7 @@
 # 라이브러리 임포트. venv 활성화 필수. backend/venv 생성된 가상환경 폴더, 가상환경을 활성화하면 이 폴더 안의 설정을 읽어서 실행됨
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from youtube_transcript_api import YouTubeTranscriptApi
 import yt_dlp
@@ -13,6 +14,10 @@ import re
 import tempfile
 from pathlib import Path
 import logging
+import json
+import threading
+import asyncio
+import subprocess
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -603,6 +608,22 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # 정적 파일 서빙 (업로드된 미디어 파일 접근용)
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
+def _get_audio_duration(file_path: str) -> float:
+    """ffprobe로 오디오/비디오 파일의 총 재생 시간(초)을 반환. 실패 시 0."""
+    try:
+        probe_exe = FFPROBE_PATH if FFPROBE_PATH and os.path.exists(FFPROBE_PATH) else "ffprobe"
+        cmd = [
+            probe_exe, "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(file_path),
+        ]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return float(out.stdout.strip())
+    except Exception:
+        return 0.0
+
+
 @app.post("/upload-transcribe")
 async def upload_and_transcribe(file: UploadFile = File(...)):
     """
@@ -658,6 +679,151 @@ async def upload_and_transcribe(file: UploadFile = File(...)):
             file_path.unlink()
         logger.error(f"❌ 로컬 파일 전사 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"전사에 실패했습니다: {str(e)}")
+
+
+@app.post("/upload-transcribe-stream")
+async def upload_and_transcribe_stream(file: UploadFile = File(...)):
+    """
+    로컬 파일 업로드 + Whisper 전사를 SSE 스트림으로 진행률과 함께 반환합니다.
+    이벤트 종류:
+      - progress: {"percent": 0~100, "stage": "..."}
+      - result:   최종 전사 결과 JSON
+      - error:    에러 메시지
+    """
+    if whisper is None:
+        raise HTTPException(status_code=500, detail="Whisper가 설치되지 않았습니다.")
+
+    ext = Path(file.filename).suffix.lower() if file.filename else ""
+    allowed = {".mp4", ".webm", ".mp3", ".wav", ".m4a", ".ogg", ".flac", ".mkv", ".avi"}
+    if ext not in allowed:
+        raise HTTPException(status_code=400, detail=f"지원하지 않는 파일 형식입니다: {ext}")
+
+    file_id = str(uuid.uuid4())[:8]
+    safe_name = f"{file_id}{ext}"
+    file_path = UPLOAD_DIR / safe_name
+    original_filename = file.filename
+
+    # 파일 저장 (메모리에 먼저 로드 — SSE generator 밖에서 처리)
+    content = await file.read()
+    with open(file_path, "wb") as f:
+        f.write(content)
+    file_size_mb = file_path.stat().st_size / 1024 / 1024
+    logger.info(f"📁 파일 업로드 완료: {original_filename} → {safe_name} ({file_size_mb:.1f}MB)")
+
+    async def event_generator():
+        """SSE 이벤트 생성기"""
+        def sse(event: str, data: dict) -> str:
+            return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+        try:
+            # ── 1단계: 파일 저장 완료 (10%) ──
+            yield sse("progress", {"percent": 10, "stage": "파일 업로드 완료"})
+
+            # ── 2단계: 오디오 길이 분석 (15%) ──
+            yield sse("progress", {"percent": 15, "stage": "오디오 분석 중..."})
+            total_duration = _get_audio_duration(str(file_path))
+            logger.info(f"⏱ 오디오 길이: {total_duration:.1f}초")
+
+            # ── 3단계: 모델 로딩 (20%) ──
+            yield sse("progress", {"percent": 20, "stage": "AI 모델 로딩 중..."})
+            model = whisper.load_model("base")
+
+            # ── 4단계: 전사 실행 (20%→95%) ──
+            yield sse("progress", {"percent": 22, "stage": "음성 인식 중..."})
+
+            # Whisper 전사를 별도 스레드에서 실행하고, 세그먼트 진행률을 폴링
+            result_holder = {"result": None, "error": None, "done": False}
+
+            def run_whisper():
+                try:
+                    result_holder["result"] = model.transcribe(
+                        str(file_path),
+                        verbose=True,  # 세그먼트별 로그 출력 (진행 확인용)
+                    )
+                except Exception as e:
+                    result_holder["error"] = str(e)
+                finally:
+                    result_holder["done"] = True
+
+            thread = threading.Thread(target=run_whisper, daemon=True)
+            thread.start()
+
+            # 폴링: Whisper가 완료될 때까지 진행률 업데이트
+            last_percent = 22
+            poll_interval = 1.5  # 초
+            elapsed = 0.0
+
+            while not result_holder["done"]:
+                await asyncio.sleep(poll_interval)
+                elapsed += poll_interval
+
+                # 진행률 추정: verbose=True일 때 Whisper가 stderr에 출력하지만
+                # 직접 캡처는 어려우므로 경과 시간 기반으로 추정
+                if total_duration > 0:
+                    # Whisper base 모델: 대략 오디오 길이의 0.3~0.5배 시간 소요
+                    # 안전하게 0.6배로 추정
+                    estimated_total_time = total_duration * 0.6
+                    progress_ratio = min(elapsed / estimated_total_time, 0.95)
+                else:
+                    # duration을 알 수 없으면 천천히 증가
+                    progress_ratio = min(elapsed / 600, 0.95)  # 10분 기준
+
+                percent = int(22 + progress_ratio * 73)  # 22% → 95%
+                percent = min(percent, 95)
+
+                if percent > last_percent:
+                    last_percent = percent
+                    minutes = int(elapsed // 60)
+                    secs = int(elapsed % 60)
+                    time_str = f"{minutes}분 {secs}초" if minutes > 0 else f"{secs}초"
+                    yield sse("progress", {
+                        "percent": percent,
+                        "stage": f"음성 인식 중... ({time_str} 경과)",
+                    })
+
+            # 스레드 완료 대기
+            thread.join(timeout=5)
+
+            if result_holder["error"]:
+                raise Exception(result_holder["error"])
+
+            result = result_holder["result"]
+            yield sse("progress", {"percent": 95, "stage": "결과 정리 중..."})
+
+            segments = [{
+                "start": seg["start"],
+                "duration": seg["end"] - seg["start"],
+                "text": seg["text"]
+            } for seg in result.get("segments", [])]
+
+            logger.info(f"✅ 전사 완료! {len(segments)}개 세그먼트")
+
+            yield sse("progress", {"percent": 100, "stage": "완료!"})
+            yield sse("result", {
+                "transcript": result["text"],
+                "segments": segments,
+                "video_id": file_id,
+                "method": "whisper",
+                "language": result.get("language", "unknown"),
+                "media_url": f"/uploads/{safe_name}",
+                "filename": original_filename,
+            })
+
+        except Exception as e:
+            logger.error(f"❌ 스트리밍 전사 실패: {e}", exc_info=True)
+            if file_path.exists():
+                file_path.unlink()
+            yield sse("error", {"detail": f"전사에 실패했습니다: {str(e)}"})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # nginx 프록시 버퍼링 비활성화
+        },
+    )
 
 @app.post("/upload-media")
 async def upload_media(file: UploadFile = File(...)):

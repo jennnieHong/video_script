@@ -353,6 +353,7 @@ function App() {
   const [localMediaUrl, setLocalMediaUrl] = useState('');  // 로컬 업로드 파일 재생 URL
   const [localFileName, setLocalFileName] = useState('');  // 업로드된 파일명
   const [uploadProgress, setUploadProgress] = useState(''); // 업로드/전사 진행 상태 메시지
+  const [transcribeProgress, setTranscribeProgress] = useState(0); // 전사 진행률 (0~100)
   const [isDragOverUpload, setIsDragOverUpload] = useState(false); // 드래그 오버 상태
   const localFileInputRef = useRef<HTMLInputElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
@@ -1070,7 +1071,7 @@ function App() {
     }
   };
 
-  // ─── 로컬 파일 업로드 핸들러 ─────────────────────────────────────
+  // ─── 로컬 파일 업로드 핸들러 (SSE 스트리밍 진행률) ──────────────
   const handleLocalFileUpload = async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
     const allowed = ['mp4', 'webm', 'mp3', 'wav', 'm4a', 'ogg', 'flac', 'mkv', 'avi'];
@@ -1082,15 +1083,14 @@ function App() {
     setLoading(true);
     setError('');
     setUploadProgress('파일 업로드 중...');
+    setTranscribeProgress(0);
     setLocalFileName(file.name);
 
     try {
       const formData = new FormData();
       formData.append('file', file);
 
-      setUploadProgress('AI 음성인식 전사 중... (파일 크기에 따라 수 분 소요)');
-
-      const res = await fetch('http://localhost:8000/upload-transcribe', {
+      const res = await fetch('http://localhost:8000/upload-transcribe-stream', {
         method: 'POST',
         body: formData,
       });
@@ -1100,20 +1100,70 @@ function App() {
         throw new Error(err.detail || '업로드 실패');
       }
 
-      const data = await res.json();
-      const fetchedSegs = data.segments || [];
+      // SSE 스트림 읽기
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error('스트림을 읽을 수 없습니다');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalData: any = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+
+        // SSE 이벤트 파싱: "event: xxx\ndata: {...}\n\n"
+        const events = buffer.split('\n\n');
+        buffer = events.pop() || ''; // 마지막 미완성 이벤트는 버퍼에 유지
+
+        for (const eventBlock of events) {
+          if (!eventBlock.trim()) continue;
+          const lines = eventBlock.split('\n');
+          let eventType = '';
+          let dataStr = '';
+          for (const line of lines) {
+            if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+            else if (line.startsWith('data: ')) dataStr = line.slice(6);
+          }
+
+          if (!eventType || !dataStr) continue;
+
+          try {
+            const payload = JSON.parse(dataStr);
+
+            if (eventType === 'progress') {
+              setTranscribeProgress(payload.percent || 0);
+              setUploadProgress(payload.stage || 'AI 음성인식 전사 중...');
+            } else if (eventType === 'result') {
+              finalData = payload;
+            } else if (eventType === 'error') {
+              throw new Error(payload.detail || '전사 실패');
+            }
+          } catch (parseErr) {
+            if (parseErr instanceof Error && parseErr.message.includes('전사 실패')) throw parseErr;
+          }
+        }
+      }
+
+      if (!finalData) throw new Error('전사 결과를 받지 못했습니다');
+
+      const fetchedSegs = finalData.segments || [];
       setSegments(fetchedSegs);
       originalSegmentsRef.current = fetchedSegs;
-      setTranscript(data.transcript);
-      setVideoId(data.video_id || '');
-      setLocalMediaUrl(`http://localhost:8000${data.media_url}`);
+      setTranscript(finalData.transcript);
+      setVideoId(finalData.video_id || '');
+      setLocalMediaUrl(`http://localhost:8000${finalData.media_url}`);
       setUploadProgress('');
+      setTranscribeProgress(100);
       showToast(`✅ ${file.name} 전사 완료 (${fetchedSegs.length}개 세그먼트)`);
 
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : '알 수 없는 오류';
       setError(msg);
       setUploadProgress('');
+      setTranscribeProgress(0);
     } finally {
       setLoading(false);
     }
@@ -3361,11 +3411,32 @@ function App() {
           {/* 로딩 */}
           {loading && (
             <div className="loading-state">
-              <div className="spinner-ring" />
-              <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', textAlign: 'center', maxWidth: 280, margin: 0 }}>
-                AI가 영상을 분석하고 있습니다.<br />
-                <span style={{ color: 'var(--text-secondary)' }}>영상 길이에 따라 수 분이 소요될 수 있습니다.</span>
-              </p>
+              {transcribeProgress > 0 ? (
+                <>
+                  {/* 퍼센트 프로그레스 바 */}
+                  <div className="transcribe-progress-wrapper">
+                    <div className="transcribe-progress-bar">
+                      <div
+                        className="transcribe-progress-fill"
+                        style={{ width: `${transcribeProgress}%` }}
+                      />
+                    </div>
+                    <span className="transcribe-progress-percent">{transcribeProgress}%</span>
+                  </div>
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', textAlign: 'center', maxWidth: 320, margin: 0 }}>
+                    {uploadProgress || 'AI 음성인식 전사 중...'}
+                    {localFileName && <><br /><span style={{ color: 'var(--text-secondary)', fontSize: '0.75rem' }}>{localFileName}</span></>}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="spinner-ring" />
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', textAlign: 'center', maxWidth: 280, margin: 0 }}>
+                    AI가 영상을 분석하고 있습니다.<br />
+                    <span style={{ color: 'var(--text-secondary)' }}>영상 길이에 따라 수 분이 소요될 수 있습니다.</span>
+                  </p>
+                </>
+              )}
             </div>
           )}
 

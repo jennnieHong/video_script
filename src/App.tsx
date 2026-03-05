@@ -966,6 +966,30 @@ function App() {
   });
   const [showSaveOptions, setShowSaveOptions] = useState(false);         // 저장 옵션 드롭다운 표시 여부
   const saveOptionsRef = useRef<HTMLDivElement>(null);                   // 저장 옵션 드롭다운 DOM ref (외부 클릭 감지)
+
+  // ─── 툴바 팔레트 (버튼 그룹 표시/숨김) ──────────────────────────
+  type ToolbarPanel = 'edit' | 'copy' | 'pronunciation' | 'save' | 'search';
+  const TOOLBAR_PANEL_LABELS: Record<ToolbarPanel, string> = {
+    edit: '✏️ 편집 (▶ ◼ + 확정 ✂ 컷)',
+    copy: '📋 복사',
+    pronunciation: '🗣️ 발음',
+    save: '💾 저장 / 목록',
+    search: '🔍 검색',
+  };
+  const [toolbarPanels, setToolbarPanels] = useState<Record<ToolbarPanel, boolean>>(() => {
+    try {
+      const saved = localStorage.getItem('yt-scribe-toolbar-panels');
+      if (saved) return JSON.parse(saved);
+    } catch { /* ignore */ }
+    return { edit: true, copy: true, pronunciation: true, save: true, search: true };
+  });
+  const [showToolbarMenu, setShowToolbarMenu] = useState(false);
+  const toolbarMenuRef = useRef<HTMLDivElement>(null);
+
+  // 팔레트 변경 시 localStorage 저장
+  useEffect(() => {
+    localStorage.setItem('yt-scribe-toolbar-panels', JSON.stringify(toolbarPanels));
+  }, [toolbarPanels]);
 // ─── 언어 목록 조회 ────────────────────────────────────────────
   // URL이 YouTube 영상 링크처럼 보이는지 간단히 확인하는 정규식
   const YT_URL_RE = /(?:youtube\.com\/watch\?v=|youtu\.be\/)([0-9A-Za-z_-]{11})/;
@@ -3600,6 +3624,8 @@ function App() {
                     }}>{segments.length}개</span>
                   )}
                 </span>
+                {/* ── 편집 그룹 ── */}
+                {toolbarPanels.edit && (<>
                 {/* 수동 자막: 마커 + 컷 */}
                 {localMediaUrl && (
                   <div className="marker-bar">
@@ -3667,6 +3693,11 @@ function App() {
                   </div>
                   </>
                 )}
+                </>
+                )}
+                {/* ── 복사 그룹 ── */}
+                {toolbarPanels.copy && (<>
+                <div className="divider-v" />
                 <button
                   className={`btn-icon${copied ? ' success' : ''}`}
                   onClick={copyToClipboard}
@@ -3677,6 +3708,9 @@ function App() {
                     : <><Copy style={{ width: 13, height: 13 }} /> 복사</>
                   }
                 </button>
+                </>)}
+                {/* ── 발음 그룹 ── */}
+                {toolbarPanels.pronunciation && (<>
                 <div className="divider-v" />
                 {/* 발음 자막 토글 */}
                 <button
@@ -3747,6 +3781,8 @@ function App() {
                     />
                   </>
                 )}
+                </>)}
+                {toolbarPanels.save && (<>
                 <div className="divider-v" />
                 {/* 저장 옵션 드롭다운 */}
                 <div ref={saveOptionsRef} style={{ position: 'relative', display: 'flex', alignItems: 'stretch', gap: '0.375rem' }}>
@@ -3979,6 +4015,8 @@ function App() {
                     )}
                   </AnimatePresence>
                 </div>
+                </>)}
+                {toolbarPanels.search && (<>
                 <div className="divider-v" />
                 {/* ── 검색 영역 ── */}
                 <div style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
@@ -4231,6 +4269,52 @@ function App() {
                             "{searchQueryRef.current}" 검색 결과가 없습니다.
                           </div>
                         )}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+                </>)}
+
+                {/* ── 툴바 팔레트 메뉴 ── */}
+                <div ref={toolbarMenuRef} style={{ position: 'relative', marginLeft: 'auto', flexShrink: 0 }}>
+                  <button
+                    className={`btn-icon${showToolbarMenu ? ' active' : ''}`}
+                    onClick={() => setShowToolbarMenu(v => !v)}
+                    title="도구 표시/숨기기"
+                    style={{ padding: '0.2rem 0.35rem' }}
+                  >
+                    <svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="3" width="7" height="7"/>
+                      <rect x="14" y="3" width="7" height="7"/>
+                      <rect x="14" y="14" width="7" height="7"/>
+                      <rect x="3" y="14" width="7" height="7"/>
+                    </svg>
+                  </button>
+                  <AnimatePresence>
+                    {showToolbarMenu && (
+                      <motion.div
+                        key="toolbar-palette"
+                        initial={{ opacity: 0, y: -6, scale: 0.97 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, y: -6, scale: 0.97 }}
+                        transition={{ duration: 0.15 }}
+                        className="floating-panel"
+                        style={{ minWidth: 220, right: 0, left: 'auto' }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+                          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)' }}>도구 표시</span>
+                          <button className="floating-close" onClick={() => setShowToolbarMenu(false)}>✕</button>
+                        </div>
+                        {(Object.keys(TOOLBAR_PANEL_LABELS) as ToolbarPanel[]).map(key => (
+                          <label
+                            key={key}
+                            className="toolbar-palette-item"
+                            onClick={() => setToolbarPanels(prev => ({ ...prev, [key]: !prev[key] }))}
+                          >
+                            <input type="checkbox" checked={toolbarPanels[key]} readOnly />
+                            <span>{TOOLBAR_PANEL_LABELS[key]}</span>
+                          </label>
+                        ))}
                       </motion.div>
                     )}
                   </AnimatePresence>

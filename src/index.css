@@ -2789,3 +2789,32 @@ input.seg-edit-text:focus {
   box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.2);
 }
 
+/* ─── 툴바 팔레트 드롭다운 아이템 ──────────────────────────────── */
+.toolbar-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background 0.15s;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.toolbar-palette-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.toolbar-palette-item input[type="checkbox"] {
+  accent-color: var(--brand, #8b5cf6);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.toolbar-palette-item span {
+  white-space: nowrap;
+}

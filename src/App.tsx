@@ -23,6 +23,8 @@ import { romanize } from '@romanize/korean';
 import { englishToKorean } from './engToKor';
 // fuse.js: 유사 문자열 검색 (오타/띄어쓰기 허용)
 import Fuse from 'fuse.js';
+// diff: 텍스트 비교 (자막 비교 기능)
+import * as Diff from 'diff';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 import TimelinePlugin from 'wavesurfer.js/dist/plugins/timeline.esm.js';
@@ -968,23 +970,31 @@ function App() {
   const saveOptionsRef = useRef<HTMLDivElement>(null);                   // 저장 옵션 드롭다운 DOM ref (외부 클릭 감지)
 
   // ─── 툴바 팔레트 (버튼 그룹 표시/숨김) ──────────────────────────
-  type ToolbarPanel = 'edit' | 'copy' | 'pronunciation' | 'save' | 'search';
+  type ToolbarPanel = 'edit' | 'copy' | 'pronunciation' | 'save' | 'search' | 'compare';
   const TOOLBAR_PANEL_LABELS: Record<ToolbarPanel, string> = {
     edit: '✏️ 편집 (▶ ◼ + 확정 ✂ 컷)',
     copy: '📋 복사',
     pronunciation: '🗣️ 발음',
     save: '💾 저장 / 목록',
     search: '🔍 검색',
+    compare: '🔀 비교',
   };
   const [toolbarPanels, setToolbarPanels] = useState<Record<ToolbarPanel, boolean>>(() => {
     try {
       const saved = localStorage.getItem('yt-scribe-toolbar-panels');
       if (saved) return JSON.parse(saved);
     } catch { /* ignore */ }
-    return { edit: true, copy: true, pronunciation: true, save: true, search: true };
+    return { edit: true, copy: true, pronunciation: true, save: true, search: true, compare: false };
   });
   const [showToolbarMenu, setShowToolbarMenu] = useState(false);
   const toolbarMenuRef = useRef<HTMLDivElement>(null);
+
+  // ─── 자막 비교 (Compare) ────────────────────────────────────
+  const [compareSegments, setCompareSegments] = useState<Segment[] | null>(null);  // 비교 대상 SRT 세그먼트
+  const [showCompare, setShowCompare] = useState(false);    // 비교 모드 활성화
+  const [compareSwapped, setCompareSwapped] = useState(false); // 좌우 컬럼 순서 반전
+  const [compareMode, setCompareMode] = useState<'text' | 'both' | 'time'>('text'); // 비교 모드
+  const compareInputRef = useRef<HTMLInputElement>(null);
 
   // 팔레트 변경 시 localStorage 저장
   useEffect(() => {
@@ -2812,7 +2822,7 @@ function App() {
   };
 
 
-  // ─── SRT 파일 내보내기 (발음 자막용) ────────────────────────────
+  // ─── SRT 파일 내보내기 ────────────────────────────────────────
   const toSrtTime = (sec: number) => {
     const h = Math.floor(sec / 3600);
     const m = Math.floor((sec % 3600) / 60);
@@ -2821,7 +2831,29 @@ function App() {
     return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')},${String(ms).padStart(3, '0')}`;
   };
 
-  const downloadSrt = () => {
+  /** SRT 다운로드 — 원본 텍스트 */
+  const downloadSrtOriginal = () => {
+    if (segments.length === 0) return;
+    const lines = segments.map((seg, i) => {
+      const text = decodeHtmlEntities(seg.text.trim());
+      const start = toSrtTime(seg.start);
+      const end = toSrtTime(seg.start + seg.duration);
+      return `${i + 1}\r\n${start} --> ${end}\r\n${text}`;
+    });
+    const content = '\uFEFF' + lines.join('\r\n\r\n') + '\r\n';
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `subtitle_${videoId || 'output'}.srt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 100);
+  };
+
+  /** SRT 다운로드 — 발음 텍스트 (입력한 발음 + 원본 타임스탬프) */
+  const downloadSrtPronunciation = () => {
     if (segments.length === 0) return;
     const lines = segments.map((seg, i) => {
       const text = (translations[i] || '').trim() || decodeHtmlEntities(seg.text.trim());
@@ -2897,6 +2929,116 @@ function App() {
     reader.readAsText(file, 'utf-8');
     e.target.value = '';
   };
+
+  // ─── 비교용 SRT 업로드 ──────────────────────────────────────
+  const handleCompareUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = reader.result as string;
+      const parsed = parseSrt(text);
+      if (parsed.length === 0) {
+        alert('SRT 파일 파싱에 실패했습니다. 형식을 확인해주세요.');
+        return;
+      }
+      setCompareSegments(parsed);
+      setShowCompare(true);
+      showToast(`📊 비교 자막 로드: ${parsed.length}개 세그먼트`);
+    };
+    reader.readAsText(file, 'utf-8');
+    e.target.value = '';
+  };
+
+  /** 좌우 비교용 정렬된 행 생성 (VS Code 스타일) */
+  const comparePairs = useMemo(() => {
+    if (!compareSegments || !showCompare) return [];
+
+    type DiffRow = {
+      time: string;
+      left: string;
+      right: string;
+      diffLeft: Diff.Change[];
+      diffRight: Diff.Change[];
+      hasDiff: boolean;
+      hasTimeDiff: boolean;    // 시간 차이 여부
+      leftTime: string;       // 업로드된 SRT 시간 범위
+      rightTime: string;      // 현재 자막 시간 범위
+      segIdx: number;
+      compareIdx: number;
+    };
+
+    const rows: DiffRow[] = [];
+    const usedCompare = new Set<number>();
+
+    for (let i = 0; i < segments.length; i++) {
+      const seg = segments[i];
+      const segEnd = seg.start + seg.duration;
+
+      // 타임스탬프가 겹치는 비교 세그먼트 찾기
+      let bestIdx = -1;
+      let bestOverlap = 0;
+      for (let j = 0; j < compareSegments.length; j++) {
+        if (usedCompare.has(j)) continue;
+        const cs = compareSegments[j];
+        const csEnd = cs.start + cs.duration;
+        const overlapStart = Math.max(seg.start, cs.start);
+        const overlapEnd = Math.min(segEnd, csEnd);
+        const overlap = Math.max(0, overlapEnd - overlapStart);
+        if (overlap > bestOverlap) {
+          bestOverlap = overlap;
+          bestIdx = j;
+        }
+      }
+
+      // 겹침이 없으면 가장 가까운 미사용 세그먼트
+      if (bestIdx < 0) {
+        const segMid = seg.start + seg.duration / 2;
+        let closestDist = Infinity;
+        for (let j = 0; j < compareSegments.length; j++) {
+          if (usedCompare.has(j)) continue;
+          const csMid = compareSegments[j].start + compareSegments[j].duration / 2;
+          const dist = Math.abs(csMid - segMid);
+          if (dist < closestDist) { closestDist = dist; bestIdx = j; }
+        }
+        if (closestDist > 10) bestIdx = -1; // 10초 이상 차이면 매칭 포기
+      }
+
+      const cs = bestIdx >= 0 ? compareSegments[bestIdx] : null;
+      const leftText = cs ? cs.text.trim() : '';
+      const rightText = seg.text.trim();
+      if (bestIdx >= 0) usedCompare.add(bestIdx);
+
+      const changes = Diff.diffWords(leftText, rightText);
+      const hasTextDiff = changes.some(c => c.added || c.removed);
+
+      // 시간 비교
+      const rightTimeStr = `${formatTimestamp(seg.start)} ~ ${formatTimestamp(seg.start + seg.duration)}`;
+      const leftTimeStr = cs ? `${formatTimestamp(cs.start)} ~ ${formatTimestamp(cs.start + cs.duration)}` : '';
+      const hasTimeDiff = cs ? (Math.abs(cs.start - seg.start) > 0.1 || Math.abs(cs.duration - seg.duration) > 0.1) : !!cs;
+
+      // compareMode에 따른 hasDiff 결정
+      const hasDiff = compareMode === 'text' ? hasTextDiff
+        : compareMode === 'time' ? hasTimeDiff
+        : (hasTextDiff || hasTimeDiff);
+
+      rows.push({
+        time: formatTimestamp(seg.start),
+        left: leftText,
+        right: rightText,
+        diffLeft: changes,
+        diffRight: changes,
+        hasDiff,
+        hasTimeDiff,
+        leftTime: leftTimeStr,
+        rightTime: rightTimeStr,
+        segIdx: i,
+        compareIdx: bestIdx,
+      });
+    }
+    return rows;
+  }, [compareSegments, showCompare, segments, formatTimestamp, compareMode]);
+
   // ================================================================
   // JSX 렌더링
   // ================================================================
@@ -3797,31 +3939,12 @@ function App() {
                     </button>
                     <button
                       className="btn-icon"
-                      onClick={downloadSrt}
-                      title="SRT 발음 자막 내보내기"
+                      onClick={downloadSrtPronunciation}
+                      title="발음 SRT 내보내기 (입력한 발음 + 원본 타임스탬프)"
                     >
                       <Download style={{ width: 13, height: 13 }} />
-                      SRT
+                      발음 SRT
                     </button>
-                    <button
-                      className="btn-icon"
-                      onClick={() => srtInputRef.current?.click()}
-                      title="SRT 자막 파일 불러오기"
-                    >
-                      <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                        <polyline points="17 8 12 3 7 8"/>
-                        <line x1="12" y1="3" x2="12" y2="15"/>
-                      </svg>
-                      SRT
-                    </button>
-                    <input
-                      ref={srtInputRef}
-                      type="file"
-                      accept=".srt"
-                      style={{ display: 'none' }}
-                      onChange={handleSrtUpload}
-                    />
                   </>
                 )}
                 </>)}
@@ -3831,8 +3954,31 @@ function App() {
                 <div ref={saveOptionsRef} style={{ position: 'relative', display: 'flex', alignItems: 'stretch', gap: '0.375rem' }}>
                   <button className="btn-icon" onClick={downloadTxt} title="TXT 파일로 저장">
                     <Download style={{ width: 13, height: 13 }} />
-                    {includeTimestamps ? '저장 (타임스탬프)' : '저장'}
+                    {includeTimestamps ? 'TXT (타임스탬프)' : 'TXT'}
                   </button>
+                  <button className="btn-icon" onClick={downloadSrtOriginal} title="SRT 자막 내보내기 (원본 텍스트)">
+                    <Download style={{ width: 13, height: 13 }} />
+                    SRT
+                  </button>
+                  <button
+                    className="btn-icon"
+                    onClick={() => srtInputRef.current?.click()}
+                    title="SRT 자막 파일 불러오기"
+                  >
+                    <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                      <polyline points="17 8 12 3 7 8"/>
+                      <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                    SRT 업로드
+                  </button>
+                  <input
+                    ref={srtInputRef}
+                    type="file"
+                    accept=".srt"
+                    style={{ display: 'none' }}
+                    onChange={handleSrtUpload}
+                  />
                   <button
                     className={`btn-icon save-opts-trigger${showSaveOptions ? ' active' : ''}`}
                     onClick={() => { closeAllDropdowns('saveOptions'); setShowSaveOptions(v => !v); }}
@@ -4318,6 +4464,51 @@ function App() {
                 </div>
                 </>)}
 
+                {/* ── 비교 그룹 ── */}
+                {toolbarPanels.compare && (<>
+                <div className="divider-v" />
+                <button
+                  className={`btn-icon${showCompare ? ' active' : ''}`}
+                  onClick={() => setShowCompare(v => !v)}
+                  title={showCompare ? '비교 모드 끄기' : '비교 모드 켜기'}
+                  disabled={!compareSegments}
+                >
+                  <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M12 3v18"/>
+                    <path d="M3 12h18"/>
+                    <path d="M6 6l-3 3 3 3"/>
+                    <path d="M18 6l3 3-3 3"/>
+                  </svg>
+                  비교{compareSegments ? ` (${compareSegments.length})` : ''}
+                </button>
+                <button
+                  className="btn-icon"
+                  onClick={() => compareInputRef.current?.click()}
+                  title="비교할 SRT 자막 업로드"
+                >
+                  <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                  SRT
+                </button>
+                {compareSegments && (
+                  <button
+                    className="btn-icon"
+                    onClick={() => { setCompareSegments(null); setShowCompare(false); showToast('비교 자막 제거됨'); }}
+                    title="비교 자막 제거"
+                  >✕</button>
+                )}
+                <input
+                  ref={compareInputRef}
+                  type="file"
+                  accept=".srt"
+                  style={{ display: 'none' }}
+                  onChange={handleCompareUpload}
+                />
+                </>)}
+
                 {/* ── 툴바 팔레트 메뉴 ── */}
                 <div ref={toolbarMenuRef} style={{ position: 'relative', marginLeft: 'auto', flexShrink: 0 }}>
                   <button
@@ -4701,6 +4892,156 @@ function App() {
           </>
         )}
       </div>
+      {/* ── VS Code 스타일 자막 비교 모달 ── */}
+      <AnimatePresence>
+        {showCompare && compareSegments && comparePairs.length > 0 && (
+          <motion.div
+            className="modal-overlay"
+            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+            onClick={() => setShowCompare(false)}
+          >
+            <motion.div
+              className="compare-modal"
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* 헤더 */}
+              <div className="compare-header">
+                <div className="compare-title">
+                  <svg style={{ width: 18, height: 18 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 3v18"/><path d="M3 12h18"/>
+                    <path d="M6 6l-3 3 3 3"/><path d="M18 6l3 3-3 3"/>
+                  </svg>
+                  자막 비교
+                </div>
+                <div className="compare-mode-group">
+                  <button className={`compare-mode-btn${compareMode === 'text' ? ' active' : ''}`} onClick={() => setCompareMode('text')}>자막</button>
+                  <button className={`compare-mode-btn${compareMode === 'both' ? ' active' : ''}`} onClick={() => setCompareMode('both')}>자막+시간</button>
+                  <button className={`compare-mode-btn${compareMode === 'time' ? ' active' : ''}`} onClick={() => setCompareMode('time')}>시간</button>
+                </div>
+                <div className="compare-stats">
+                  {comparePairs.filter(r => r.hasDiff).length}개 차이 / {comparePairs.length}개 세그먼트
+                </div>
+                <button className="compare-close" onClick={() => setShowCompare(false)}>✕</button>
+              </div>
+
+              {/* 컬럼 헤더 */}
+              <div className="compare-col-header">
+                <div className="compare-col-label">{compareSwapped ? '📝 현재 자막' : '📄 업로드된 SRT (비교 대상)'}</div>
+                <button
+                  className="compare-swap-btn"
+                  onClick={() => setCompareSwapped(v => !v)}
+                  title="좌우 컬럼 순서 바꾸기"
+                >⇄</button>
+                <div className="compare-col-label">{compareSwapped ? '📄 업로드된 SRT (비교 대상)' : '📝 현재 자막'}</div>
+              </div>
+
+              {/* 비교 내용 */}
+              <div className="compare-body">
+                {comparePairs.map((row, idx) => {
+                  const cellL = compareSwapped ? row.right : row.left;
+                  const cellR = compareSwapped ? row.left : row.right;
+                  const timeL = compareSwapped ? row.rightTime : row.leftTime;
+                  const timeR = compareSwapped ? row.leftTime : row.rightTime;
+                  const diffChanges = row.diffLeft;
+
+                  return (
+                  <div key={idx} className={`compare-row${row.hasDiff ? ' has-diff' : ' no-diff'}`}>
+                    <div className="compare-line-num">{idx + 1}</div>
+                    <div className="compare-time">{row.time}</div>
+                    <div className="compare-cell compare-left">
+                      {/* 시간 표시 */}
+                      {(compareMode === 'time' || compareMode === 'both') && (
+                        <div className={`compare-time-row${row.hasTimeDiff ? ' diff-time-changed' : ''}`}>
+                          {timeL || <span className="compare-empty">—</span>}
+                        </div>
+                      )}
+                      {/* 자막 표시 */}
+                      {(compareMode === 'text' || compareMode === 'both') && (
+                        cellL ? diffChanges.map((part, pi) => {
+                          if (compareSwapped) {
+                            if (part.removed) return null;
+                            if (part.added) return <span key={pi} className="diff-added">{part.value}</span>;
+                          } else {
+                            if (part.added) return null;
+                            if (part.removed) return <span key={pi} className="diff-removed">{part.value}</span>;
+                          }
+                          return <span key={pi}>{part.value}</span>;
+                        }) : <span className="compare-empty">—</span>
+                      )}
+                    </div>
+                    <div className="compare-actions">
+                      {row.hasDiff && (
+                        <>
+                          <button
+                            className="compare-action-btn"
+                            title={compareSwapped ? '좌→우: 현재 자막을 업로드 SRT에 덮어쓰기' : '좌→우: 업로드된 텍스트로 현재 자막 덮어쓰기'}
+                            disabled={!cellL}
+                            onClick={() => {
+                              if (compareSwapped) {
+                                if (row.compareIdx < 0) return;
+                                setCompareSegments(prev => {
+                                  if (!prev) return prev;
+                                  return prev.map((cs, ci) => ci === row.compareIdx ? { ...cs, text: row.right } : cs);
+                                });
+                              } else {
+                                setSegments(prev => prev.map((s, si) => si === row.segIdx ? { ...s, text: row.left } : s));
+                              }
+                              showToast(`#${idx + 1} 좌→우 적용`);
+                            }}
+                          >→</button>
+                          <button
+                            className="compare-action-btn"
+                            title={compareSwapped ? '우→좌: 업로드 SRT를 현재 자막에 덮어쓰기' : '우→좌: 현재 텍스트를 업로드 자막에 덮어쓰기'}
+                            disabled={!cellR}
+                            onClick={() => {
+                              if (compareSwapped) {
+                                setSegments(prev => prev.map((s, si) => si === row.segIdx ? { ...s, text: row.left } : s));
+                              } else {
+                                if (row.compareIdx < 0) return;
+                                setCompareSegments(prev => {
+                                  if (!prev) return prev;
+                                  return prev.map((cs, ci) => ci === row.compareIdx ? { ...cs, text: row.right } : cs);
+                                });
+                              }
+                              showToast(`#${idx + 1} 우→좌 적용`);
+                            }}
+                          >←</button>
+                        </>
+                      )}
+                    </div>
+                    <div className="compare-cell compare-right">
+                      {/* 시간 표시 */}
+                      {(compareMode === 'time' || compareMode === 'both') && (
+                        <div className={`compare-time-row${row.hasTimeDiff ? ' diff-time-changed' : ''}`}>
+                          {timeR || <span className="compare-empty">—</span>}
+                        </div>
+                      )}
+                      {/* 자막 표시 */}
+                      {(compareMode === 'text' || compareMode === 'both') && (
+                        cellR ? diffChanges.map((part, pi) => {
+                          if (compareSwapped) {
+                            if (part.added) return null;
+                            if (part.removed) return <span key={pi} className="diff-removed">{part.value}</span>;
+                          } else {
+                            if (part.removed) return null;
+                            if (part.added) return <span key={pi} className="diff-added">{part.value}</span>;
+                          }
+                          return <span key={pi}>{part.value}</span>;
+                        }) : <span className="compare-empty">—</span>
+                      )}
+                    </div>
+                  </div>
+                  );
+                })}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* ── 토스트 메시지 ── */}
       <AnimatePresence>
         {toastMessage && (

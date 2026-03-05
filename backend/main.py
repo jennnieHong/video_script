@@ -1,5 +1,5 @@
 # 라이브러리 임포트. venv 활성화 필수. backend/venv 생성된 가상환경 폴더, 가상환경을 활성화하면 이 폴더 안의 설정을 읽어서 실행됨
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -625,10 +625,14 @@ def _get_audio_duration(file_path: str) -> float:
 
 
 @app.post("/upload-transcribe")
-async def upload_and_transcribe(file: UploadFile = File(...)):
+async def upload_and_transcribe(
+    file: UploadFile = File(...),
+    model: str = Query("base", description="Whisper 모델: tiny, base, small, medium, large")
+):
     """
     로컬 영상/음성 파일을 업로드하여 Whisper로 전사합니다.
     지원 형식: mp4, webm, mp3, wav, m4a, ogg, flac
+    지원 모델: tiny, base, small, medium, large
     """
     if whisper is None:
         raise HTTPException(status_code=500, detail="Whisper가 설치되지 않았습니다. pip install openai-whisper")
@@ -651,9 +655,11 @@ async def upload_and_transcribe(file: UploadFile = File(...)):
         logger.info(f"📁 파일 업로드 완료: {file.filename} → {safe_name} ({file_path.stat().st_size / 1024 / 1024:.1f}MB)")
 
         # Whisper 전사
-        logger.info("🎙️ Whisper 전사 시작...")
-        model = whisper.load_model("base")
-        result = model.transcribe(str(file_path))
+        allowed_models = {"tiny", "base", "small", "medium", "large"}
+        model_name = model if model in allowed_models else "base"
+        logger.info(f"🎤 Whisper 전사 시작... (모델: {model_name})")
+        whisper_model = whisper.load_model(model_name)
+        result = whisper_model.transcribe(str(file_path))
 
         segments = [{
             "start": seg["start"],
@@ -682,7 +688,10 @@ async def upload_and_transcribe(file: UploadFile = File(...)):
 
 
 @app.post("/upload-transcribe-stream")
-async def upload_and_transcribe_stream(file: UploadFile = File(...)):
+async def upload_and_transcribe_stream(
+    file: UploadFile = File(...),
+    model: str = Query("base", description="Whisper 모델: tiny, base, small, medium, large")
+):
     """
     로컬 파일 업로드 + Whisper 전사를 SSE 스트림으로 진행률과 함께 반환합니다.
     이벤트 종류:
@@ -724,9 +733,11 @@ async def upload_and_transcribe_stream(file: UploadFile = File(...)):
             total_duration = _get_audio_duration(str(file_path))
             logger.info(f"⏱ 오디오 길이: {total_duration:.1f}초")
 
-            # ── 3단계: 모델 로딩 (20%) ──
             yield sse("progress", {"percent": 20, "stage": "AI 모델 로딩 중..."})
-            model = whisper.load_model("base")
+            allowed_models = {"tiny", "base", "small", "medium", "large"}
+            model_name = model if model in allowed_models else "base"
+            logger.info(f"🎤 Whisper 모델 로딩: {model_name}")
+            whisper_model = whisper.load_model(model_name)
 
             # ── 4단계: 전사 실행 (20%→95%) ──
             yield sse("progress", {"percent": 22, "stage": "음성 인식 중..."})
@@ -736,7 +747,7 @@ async def upload_and_transcribe_stream(file: UploadFile = File(...)):
 
             def run_whisper():
                 try:
-                    result_holder["result"] = model.transcribe(
+                    result_holder["result"] = whisper_model.transcribe(
                         str(file_path),
                         verbose=True,  # 세그먼트별 로그 출력 (진행 확인용)
                     )

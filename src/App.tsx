@@ -355,6 +355,7 @@ function App() {
   const [uploadProgress, setUploadProgress] = useState(''); // 업로드/전사 진행 상태 메시지
   const [transcribeProgress, setTranscribeProgress] = useState(0); // 전사 진행률 (0~100)
   const [isDragOverUpload, setIsDragOverUpload] = useState(false); // 드래그 오버 상태
+  const [whisperModel, setWhisperModel] = useState('base'); // Whisper 모델 선택
   const localFileInputRef = useRef<HTMLInputElement>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const [markIn, setMarkIn] = useState<number | null>(null);     // 수동 자막: 시작(In) 마커 시간
@@ -1090,7 +1091,10 @@ function App() {
       const formData = new FormData();
       formData.append('file', file);
 
-      const res = await fetch('http://localhost:8000/upload-transcribe-stream', {
+      const modelLabel = whisperModel === 'tiny' ? 'tiny' : whisperModel === 'base' ? 'base' : whisperModel === 'small' ? 'small' : whisperModel === 'medium' ? 'medium' : 'large';
+      setUploadProgress(`AI 음성인식 전사 중 (${modelLabel} 모델)...`);
+
+      const res = await fetch(`http://localhost:8000/upload-transcribe-stream?model=${whisperModel}`, {
         method: 'POST',
         body: formData,
       });
@@ -3008,7 +3012,16 @@ function App() {
                 </svg>
                 <span className="upload-drop-text">로컬 영상/음성 파일을 드래그하거나 클릭하여 업로드</span>
                 <span className="upload-drop-formats">.mp4 .webm .mp3 .wav .m4a .ogg .flac</span>
-                <span className="upload-drop-hint">AI 음성인식으로 자동 전사됩니다</span>
+                <div className="whisper-model-select" onClick={(e) => e.stopPropagation()}>
+                  <label>🧠 Whisper 모델:</label>
+                  <select value={whisperModel} onChange={(e) => setWhisperModel(e.target.value)}>
+                    <option value="tiny">tiny — 빠름, 낮은 정확도</option>
+                    <option value="base">base — 기본 (권장)</option>
+                    <option value="small">small — 보통 속도, 좋은 정확도</option>
+                    <option value="medium">medium — 느림, 높은 정확도</option>
+                    <option value="large">large — 매우 느림, 최고 정확도</option>
+                  </select>
+                </div>
               </div>
               <button
                 className="upload-manual-btn"

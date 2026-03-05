@@ -9,7 +9,7 @@
 //   5. 구간반복 모드: 검색 결과 클릭 시 해당 구간을 앱 내 플레이어로 반복 재생
 // ============================================================
 
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 // lucide-react: 아이콘 라이브러리
 import { Youtube, Send, Copy, Download, Loader2, FileText, CheckCircle2, Search, Clock, RotateCcw } from 'lucide-react';
@@ -990,6 +990,49 @@ function App() {
   useEffect(() => {
     localStorage.setItem('yt-scribe-toolbar-panels', JSON.stringify(toolbarPanels));
   }, [toolbarPanels]);
+
+  // 모든 드롭다운을 닫는 헬퍼 (하나를 열 때 나머지 닫기)
+  const closeAllDropdowns = (except?: string) => {
+    if (except !== 'editSettings') setShowEditSettings(false);
+    if (except !== 'saveOptions') setShowSaveOptions(false);
+    if (except !== 'searchOpts') setShowSearchOpts(false);
+    if (except !== 'modePanel') setShowModePanel(false);
+    if (except !== 'scriptsPanel') setShowScriptsPanel(false);
+    if (except !== 'toolbarMenu') setShowToolbarMenu(false);
+  };
+
+  // 드롭다운이 열릴 때 position:fixed로 전환하여 overflow:hidden 부모를 우회
+  // useLayoutEffect: 브라우저 페인트 전에 실행 → 깜빡임 없음
+  useLayoutEffect(() => {
+    const panels = document.querySelectorAll('.floating-panel, .save-options-popup, .edit-settings-dropdown') as NodeListOf<HTMLElement>;
+    panels.forEach(panel => {
+      // 부모 버튼/컨테이너의 위치를 기준으로 fixed 좌표 계산
+      const parent = panel.parentElement;
+      if (!parent) return;
+      const parentRect = parent.getBoundingClientRect();
+
+      panel.style.position = 'fixed';
+      panel.style.top = `${parentRect.bottom + 6}px`;
+      panel.style.marginLeft = '';
+
+      // 일단 right 기준으로 배치
+      const panelWidth = panel.offsetWidth;
+      let left = parentRect.right - panelWidth;
+
+      // 뷰포트 경계 보정
+      const margin = 12;
+      const vw = window.innerWidth;
+      if (left + panelWidth > vw - margin) {
+        left = vw - panelWidth - margin;
+      }
+      if (left < margin) {
+        left = margin;
+      }
+
+      panel.style.left = `${left}px`;
+      panel.style.right = 'auto';
+    });
+  }, [showEditSettings, showSaveOptions, showSearchOpts, showModePanel, showScriptsPanel, showToolbarMenu, showSearchResults]);
 // ─── 언어 목록 조회 ────────────────────────────────────────────
   // URL이 YouTube 영상 링크처럼 보이는지 간단히 확인하는 정규식
   const YT_URL_RE = /(?:youtube\.com\/watch\?v=|youtu\.be\/)([0-9A-Za-z_-]{11})/;
@@ -3674,7 +3717,7 @@ function App() {
                   <div ref={editSettingsRef} style={{ position: 'relative' }}>
                     <button
                       className={`btn-icon${showEditSettings ? ' active' : ''}`}
-                      onClick={() => setShowEditSettings(v => !v)}
+                      onClick={() => { closeAllDropdowns('editSettings'); setShowEditSettings(v => !v); }}
                       title="편집 설정"
                     >
                       <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -3792,7 +3835,7 @@ function App() {
                   </button>
                   <button
                     className={`btn-icon save-opts-trigger${showSaveOptions ? ' active' : ''}`}
-                    onClick={() => setShowSaveOptions(v => !v)}
+                    onClick={() => { closeAllDropdowns('saveOptions'); setShowSaveOptions(v => !v); }}
                     title="저장 옵션"
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ width: 13, height: 13 }}>
@@ -3936,7 +3979,7 @@ function App() {
                   </button>
                   <button
                     className={`btn-icon${showScriptsPanel ? ' active' : ''}`}
-                    onClick={() => { savedScriptsRef.current = loadAllScripts(); forceScriptsUpdate(n => n + 1); setShowScriptsPanel(v => !v); }}
+                    onClick={() => { closeAllDropdowns('scriptsPanel'); savedScriptsRef.current = loadAllScripts(); forceScriptsUpdate(n => n + 1); setShowScriptsPanel(v => !v); }}
                     title="저장된 대본 관리"
                   >
                     <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
@@ -4049,7 +4092,7 @@ function App() {
                   <div ref={searchOptsRef} style={{ position: 'relative' }}>
                   <button
                     className={`btn-icon${showSearchOpts ? ' active' : ''}`}
-                    onClick={() => setShowSearchOpts(v => !v)}
+                    onClick={() => { closeAllDropdowns('searchOpts'); setShowSearchOpts(v => !v); }}
                     title="검색 설정"
                   >
                     <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -4120,7 +4163,7 @@ function App() {
                   {/* 모드 토글 버튼 */}
                   <button
                     className={`btn-icon${showModePanel ? ' active' : ''}`}
-                    onClick={() => setShowModePanel(v => !v)}
+                    onClick={() => { closeAllDropdowns('modePanel'); setShowModePanel(v => !v); }}
                     title="클릭 동작 설정"
                   >
                     {interactionMode === 'search'
@@ -4279,7 +4322,7 @@ function App() {
                 <div ref={toolbarMenuRef} style={{ position: 'relative', marginLeft: 'auto', flexShrink: 0 }}>
                   <button
                     className={`btn-icon${showToolbarMenu ? ' active' : ''}`}
-                    onClick={() => setShowToolbarMenu(v => !v)}
+                    onClick={() => { closeAllDropdowns('toolbarMenu'); setShowToolbarMenu(v => !v); }}
                     title="도구 표시/숨기기"
                     style={{ padding: '0.2rem 0.35rem' }}
                   >

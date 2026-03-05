@@ -570,6 +570,7 @@ body.is-resizing video {
   background: var(--surface-0);
   flex-shrink: 0;
   flex-wrap: wrap;
+  overflow: visible;  /* floating-panel이 넘칠 수 있도록 */
 }
 
 /* 인라인 검색 필드 */
@@ -617,8 +618,8 @@ body.is-resizing video {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   padding: 0.6rem 0.75rem;
-  box-shadow: 0 8px 32px rgba(0,0,0,0.35);
-  z-index: 100;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+  z-index: 9999;
   min-width: 200px;
 }
 
@@ -793,7 +794,7 @@ body.is-resizing video {
   position: absolute;
   top: calc(100% + 6px);
   right: 0;
-  z-index: 200;
+  z-index: 9999;
   width: 260px;
   background: var(--surface-1);
   border: 1px solid var(--border-strong);
@@ -2486,7 +2487,7 @@ input.seg-edit-text:focus {
   border-radius: 0.5rem;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
   padding: 0.35rem 0;
-  z-index: 100;
+  z-index: 9999;
 }
 .edit-settings-item {
   display: flex;

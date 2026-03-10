@@ -595,6 +595,463 @@ async def clip_with_burned_subs(request: BurnSubsRequest, background_tasks: Back
         logger.error(f"❌ 자막 굽기 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"자막 굽기에 실패했습니다: {str(e)}")
 
+
+# ─── YouTube 영상 편집(크롭/자막가리기) 다운로드 엔드포인트 ─────────
+
+class ClipEditRequest(BaseModel):
+    url: str                   # YouTube URL
+    start: float = 0
+    end: float = 0             # 0이면 전체
+    quality: str = "720"
+    # 출력 해상도 (0이면 크롭 크기 사용)
+    output_w: int = 0
+    output_h: int = 0
+    # 크롭 영역 (% 기준, 원본 영상 기준)
+    crop_x: float = 0
+    crop_y: float = 0
+    crop_w: float = 100
+    crop_h: float = 100
+    # 자막 가리기 (% 기준, 원본 영상 기준)
+    cover_enabled: bool = False
+    cover_x: float = 5
+    cover_y: float = 83
+    cover_w: float = 90
+    cover_h: float = 12
+    cover_color: str = "#000000"
+    cover_opacity: float = 0.92
+
+@app.post("/clip-edit")
+async def clip_edit(request: ClipEditRequest, background_tasks: BackgroundTasks):
+    """
+    YouTube 영상을 다운로드한 뒤 crop → scale+pad → drawbox(자막가리기)를 적용하여 MP4로 반환합니다.
+    화면에서 보이는 그대로 다운로드됩니다.
+    """
+    video_id = extract_video_id(request.url)
+    if not video_id:
+        raise HTTPException(status_code=400, detail="유효한 유튜브 URL이 아닙니다.")
+
+    temp_dir = tempfile.mkdtemp()
+    raw_path = os.path.join(temp_dir, f"raw_{video_id}.mp4")
+    clip_path = os.path.join(temp_dir, f"edited_{video_id}.mp4")
+
+    try:
+        # ── 1단계: yt-dlp 다운로드 ───────────────────────────────
+        QMAP = {
+            "360":  "bestvideo[vcodec^=avc1][height<=360]+bestaudio[acodec^=mp4a]/best[height<=360]/best",
+            "480":  "bestvideo[vcodec^=avc1][height<=480]+bestaudio[acodec^=mp4a]/best[height<=480]/best",
+            "720":  "bestvideo[vcodec^=avc1][height<=720]+bestaudio[acodec^=mp4a]/best[height<=720]/best",
+            "1080": "bestvideo[vcodec^=avc1][height<=1080]+bestaudio[acodec^=mp4a]/best[height<=1080]/best",
+            "best": "bestvideo[vcodec^=avc1]+bestaudio[acodec^=mp4a]/best",
+        }
+        ydl_opts = {
+            "format": QMAP.get(request.quality, QMAP["720"]),
+            "merge_output_format": "mp4",
+            "outtmpl": raw_path,
+            "quiet": True,
+            "no_warnings": True,
+        }
+        if FFMPEG_PATH:
+            ydl_opts["ffmpeg_location"] = os.path.dirname(FFMPEG_PATH)
+
+        logger.info(f"🎬 YouTube 편집 다운로드 시작: {video_id}")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([request.url])
+
+        if not os.path.exists(raw_path):
+            candidates = glob.glob(os.path.join(temp_dir, f"raw_{video_id}.*"))
+            if not candidates:
+                raise FileNotFoundError("다운로드된 영상 파일을 찾을 수 없습니다.")
+            raw_path = candidates[0]
+
+        # ── 2단계: ffprobe로 원본 해상도 ─────────────────────────
+        ffmpeg_exe = FFMPEG_PATH if FFMPEG_PATH else "ffmpeg"
+        probe_exe = FFPROBE_PATH if FFPROBE_PATH and os.path.exists(FFPROBE_PATH) else "ffprobe"
+        probe_cmd = [
+            probe_exe, "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=s=x:p=0",
+            raw_path,
+        ]
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+        if probe_result.returncode != 0:
+            raise RuntimeError(f"ffprobe 오류: {probe_result.stderr}")
+        dims = probe_result.stdout.strip().split("x")
+        src_w, src_h = int(dims[0]), int(dims[1])
+        logger.info(f"📐 원본 해상도: {src_w}x{src_h}")
+
+        # ── 3단계: vf 필터 구성 (crop → scale+pad → drawbox) ────
+        vf_filters = []
+
+        # 크롭
+        has_crop = (request.crop_w < 100 or request.crop_h < 100 or
+                    request.crop_x > 0 or request.crop_y > 0)
+        if has_crop:
+            cx = int(src_w * request.crop_x / 100)
+            cy = int(src_h * request.crop_y / 100)
+            cw = int(src_w * request.crop_w / 100)
+            ch = int(src_h * request.crop_h / 100)
+            cw = cw - (cw % 2)
+            ch = ch - (ch % 2)
+            vf_filters.append(f"crop={cw}:{ch}:{cx}:{cy}")
+            logger.info(f"✂️ 크롭: {cw}x{ch}+{cx}+{cy}")
+            cropped_w, cropped_h = cw, ch
+        else:
+            cropped_w, cropped_h = src_w, src_h
+
+        # scale+pad
+        out_w = request.output_w if request.output_w > 0 else cropped_w
+        out_h = request.output_h if request.output_h > 0 else cropped_h
+        out_w = out_w - (out_w % 2)
+        out_h = out_h - (out_h % 2)
+
+        needs_resize = (out_w != cropped_w or out_h != cropped_h)
+        if needs_resize:
+            vf_filters.append(f"scale={out_w}:{out_h}:force_original_aspect_ratio=decrease")
+            vf_filters.append(f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black")
+            logger.info(f"📏 출력 해상도: {out_w}x{out_h} (letterbox)")
+
+        # drawbox (자막가리기)
+        if request.cover_enabled:
+            raw_cx = src_w * request.cover_x / 100
+            raw_cy = src_h * request.cover_y / 100
+            raw_cw = src_w * request.cover_w / 100
+            raw_ch = src_h * request.cover_h / 100
+            crop_px = src_w * request.crop_x / 100
+            crop_py = src_h * request.crop_y / 100
+            rel_cx = raw_cx - crop_px
+            rel_cy = raw_cy - crop_py
+            if needs_resize:
+                scale_ratio = min(out_w / cropped_w, out_h / cropped_h)
+                scaled_w = cropped_w * scale_ratio
+                scaled_h = cropped_h * scale_ratio
+                pad_x = (out_w - scaled_w) / 2
+                pad_y = (out_h - scaled_h) / 2
+            else:
+                scale_ratio = 1.0
+                pad_x = 0
+                pad_y = 0
+            bx = int(pad_x + rel_cx * scale_ratio)
+            by = int(pad_y + rel_cy * scale_ratio)
+            bw = int(raw_cw * scale_ratio)
+            bh = int(raw_ch * scale_ratio)
+            bx = max(0, min(bx, out_w - 1))
+            by = max(0, min(by, out_h - 1))
+            bw = max(1, min(bw, out_w - bx))
+            bh = max(1, min(bh, out_h - by))
+            color_hex = request.cover_color.lstrip("#")
+            opacity = round(request.cover_opacity, 2)
+            color_str = f"0x{color_hex}@{opacity}"
+            vf_filters.append(f"drawbox=x={bx}:y={by}:w={bw}:h={bh}:color={color_str}:t=fill")
+            logger.info(f"🟫 자막가리기: {bw}x{bh}+{bx}+{by} color={color_str}")
+
+        # ── 4단계: ffmpeg 실행 ────────────────────────────────────
+        cmd = [ffmpeg_exe, "-y"]
+        if request.start > 0:
+            cmd += ["-ss", str(request.start)]
+        cmd += ["-i", raw_path]
+        if request.end > 0 and request.end > request.start:
+            cmd += ["-t", str(request.end - request.start)]
+
+        if vf_filters:
+            cmd += ["-vf", ",".join(vf_filters)]
+            cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "fast"]
+        else:
+            cmd += ["-c:v", "copy"]
+
+        cmd += ["-c:a", "aac", "-avoid_negative_ts", "make_zero", clip_path]
+
+        logger.info(f"🎬 YouTube 편집 시작: {' '.join(cmd)}")
+        duration = (request.end - request.start) if request.end > request.start else 600
+        timeout = max(300, int(duration) + 120)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            logger.error(f"ffmpeg stderr: {result.stderr[-500:]}")
+            raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+
+        if not os.path.exists(clip_path) or os.path.getsize(clip_path) == 0:
+            raise FileNotFoundError("편집된 클립 파일이 생성되지 않았습니다.")
+
+        filename = f"edited_{video_id}.mp4"
+        logger.info(f"✅ YouTube 편집 완료: {filename} ({os.path.getsize(clip_path)/1024/1024:.1f}MB)")
+
+        def cleanup():
+            import shutil as _shutil
+            _shutil.rmtree(temp_dir, ignore_errors=True)
+
+        background_tasks.add_task(cleanup)
+        return FileResponse(
+            clip_path, media_type="video/mp4", filename=filename,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    except Exception as e:
+        import shutil as _shutil
+        _shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.error(f"❌ YouTube 편집 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"YouTube 편집에 실패했습니다: {str(e)}")
+
+# ─── 로컬 영상 편집(크롭/자막가리기) 엔드포인트 ────────────────────
+from typing import Optional
+
+class LocalClipRequest(BaseModel):
+    media_path: str            # /uploads/xxx.mp4
+    start: float = 0
+    end: float = 0             # 0이면 전체
+    # 출력 해상도 (직접 지정, 0이면 원본)
+    output_w: int = 0
+    output_h: int = 0
+    # 크롭 영역 (% 기준, 원본 영상 기준)
+    crop_x: float = 0
+    crop_y: float = 0
+    crop_w: float = 100
+    crop_h: float = 100
+    # 자막 가리기 (% 기준, 출력 프레임 기준)
+    cover_enabled: bool = False
+    cover_x: float = 5
+    cover_y: float = 83
+    cover_w: float = 90
+    cover_h: float = 12
+    cover_color: str = "#000000"
+    cover_opacity: float = 0.92
+    video_scale: float = 1.0     # 영상 축소 비율 (0.1~2.0+)
+    cover_is_canvas_pct: bool = False  # True면 cover 좌표를 출력 캔버스 % 그대로 사용
+    pan_x: float = 0.0  # 드래그 오프셋 X (캔버스 %, 0=중앙)
+    pan_y: float = 0.0  # 드래그 오프셋 Y (캔버스 %, 0=중앙)
+
+@app.post("/clip-local")
+async def clip_local(request: LocalClipRequest, background_tasks: BackgroundTasks):
+    """
+    로컬 업로드 영상을 crop → scale+pad → drawbox(자막가리기) 순서로 처리합니다.
+    화면에서 보이는 그대로 다운로드됩니다.
+    """
+    # 미디어 파일 경로 확인
+    rel = request.media_path.lstrip("/")
+    src_path = str(BASE_DIR / rel)
+    if not os.path.exists(src_path):
+        raise HTTPException(status_code=400, detail=f"파일을 찾을 수 없습니다: {request.media_path}")
+
+    temp_dir = tempfile.mkdtemp()
+    clip_path = os.path.join(temp_dir, "edited_clip.mp4")
+
+    try:
+        ffmpeg_exe = FFMPEG_PATH if FFMPEG_PATH else "ffmpeg"
+
+        # ffprobe로 원본 해상도 가져오기
+        probe_exe = FFPROBE_PATH if FFPROBE_PATH and os.path.exists(FFPROBE_PATH) else "ffprobe"
+        probe_cmd = [
+            probe_exe, "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream=width,height",
+            "-of", "csv=s=x:p=0",
+            src_path,
+        ]
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=30)
+        if probe_result.returncode != 0:
+            raise RuntimeError(f"ffprobe 오류: {probe_result.stderr}")
+        dims = probe_result.stdout.strip().split("x")
+        src_w, src_h = int(dims[0]), int(dims[1])
+        logger.info(f"📐 원본 해상도: {src_w}x{src_h}")
+
+        vf_filters = []
+
+        # ── 1단계: 크롭 (원본에서 선택 영역만 잘라냄) ──
+        # 크롭 요청 좌표 (음수 또는 영상 밖 가능)
+        req_cx = int(src_w * request.crop_x / 100)
+        req_cy = int(src_h * request.crop_y / 100)
+        req_cw = int(src_w * request.crop_w / 100)
+        req_ch = int(src_h * request.crop_h / 100)
+
+        has_crop = (request.crop_w < 100 or request.crop_h < 100 or
+                    request.crop_x > 0 or request.crop_y > 0 or
+                    request.crop_x < 0 or request.crop_y < 0 or
+                    request.crop_w > 100 or request.crop_h > 100)
+
+        if has_crop:
+            # 영상과 크롭의 교차 영역 계산
+            ix1 = max(0, req_cx)
+            iy1 = max(0, req_cy)
+            ix2 = min(src_w, req_cx + req_cw)
+            iy2 = min(src_h, req_cy + req_ch)
+            iw = ix2 - ix1
+            ih = iy2 - iy1
+
+            # 크롭이 영상 안에만 있는 경우 (일반 크롭)
+            extends_beyond = (req_cx < 0 or req_cy < 0 or
+                              req_cx + req_cw > src_w or req_cy + req_ch > src_h)
+
+            if iw > 0 and ih > 0:
+                iw = max(2, iw - (iw % 2))
+                ih = max(2, ih - (ih % 2))
+                vf_filters.append(f"crop={iw}:{ih}:{ix1}:{iy1}")
+
+                if extends_beyond:
+                    # 크롭이 영상 밖으로 확장 → 교차 부분 크롭 후 패딩
+                    pad_x = ix1 - req_cx  # 영상 콘텐츠의 출력 내 위치
+                    pad_y = iy1 - req_cy
+                    pad_w = max(2, req_cw - (req_cw % 2))
+                    pad_h = max(2, req_ch - (req_ch % 2))
+                    vf_filters.append(f"pad={pad_w}:{pad_h}:{pad_x}:{pad_y}:black")
+                    logger.info(f"✂️ 크롭+패드: crop={iw}x{ih}+{ix1}+{iy1} → pad={pad_w}x{pad_h}+{pad_x}+{pad_y}")
+                    cropped_w, cropped_h = pad_w, pad_h
+                else:
+                    logger.info(f"✂️ 크롭: {iw}x{ih}+{ix1}+{iy1}")
+                    cropped_w, cropped_h = iw, ih
+            else:
+                # 교차 없음 → 전체 검은 프레임
+                pad_w = max(2, req_cw - (req_cw % 2))
+                pad_h = max(2, req_ch - (req_ch % 2))
+                vf_filters.append(f"scale=2:2")
+                vf_filters.append(f"pad={pad_w}:{pad_h}:{pad_w//2}:{pad_h//2}:black")
+                logger.info(f"✂️ 교차 없음: 검은 프레임 {pad_w}x{pad_h}")
+                cropped_w, cropped_h = pad_w, pad_h
+        else:
+            cropped_w, cropped_h = src_w, src_h
+
+        # ── 2단계: 출력 해상도로 scale+pad (letterbox) ──
+        out_w = request.output_w if request.output_w > 0 else cropped_w
+        out_h = request.output_h if request.output_h > 0 else cropped_h
+        # 짝수로 맞추기
+        out_w = out_w - (out_w % 2)
+        out_h = out_h - (out_h % 2)
+
+        needs_resize = (out_w != cropped_w or out_h != cropped_h)
+        vs = max(0.1, request.video_scale)  # 상한 제거 — 확대 허용
+
+        if needs_resize or vs != 1.0:
+            # 영상을 출력 캔버스에 맞추는 기본 비율 계산
+            fit_ratio = min(out_w / cropped_w, out_h / cropped_h)
+            # video_scale 적용
+            final_ratio = fit_ratio * vs
+            final_w = int(cropped_w * final_ratio)
+            final_h = int(cropped_h * final_ratio)
+            # 짝수로 맞추기
+            final_w = final_w - (final_w % 2)
+            final_h = final_h - (final_h % 2)
+            # 최소 2px
+            final_w = max(2, final_w)
+            final_h = max(2, final_h)
+
+            vf_filters.append(f"scale={final_w}:{final_h}")
+
+            # 초과하는 부분은 crop, 부족한 부분은 pad (둘 다 적용 가능)
+            need_crop = (final_w > out_w or final_h > out_h)
+            need_pad = (final_w < out_w or final_h < out_h)
+
+            if need_crop:
+                crop_cw = min(final_w, out_w)
+                crop_ch = min(final_h, out_h)
+                # 팬 오프셋 적용 (캔버스 % → 픽셀)
+                # pan_x > 0 → 영상이 오른쪽으로 이동 → crop 왼쪽으로 이동
+                pan_px_x = int(final_w * request.pan_x / 100)
+                pan_px_y = int(final_h * request.pan_y / 100)
+                # 기본 중앙 크롭 위치에서 팬 오프셋 적용
+                cx = (final_w - crop_cw) // 2 - pan_px_x
+                cy = (final_h - crop_ch) // 2 - pan_px_y
+                # 범위 클램핑
+                cx = max(0, min(cx, final_w - crop_cw))
+                cy = max(0, min(cy, final_h - crop_ch))
+                vf_filters.append(f"crop={crop_cw}:{crop_ch}:{cx}:{cy}")
+                logger.info(f"✂️ 크롭: {crop_cw}x{crop_ch}+{cx}+{cy} (pan={request.pan_x:.1f},{request.pan_y:.1f}%)")
+            if need_pad:
+                vf_filters.append(f"pad={out_w}:{out_h}:(ow-iw)/2:(oh-ih)/2:black")
+
+            logger.info(f"📏 출력: {out_w}x{out_h} (scale={final_w}x{final_h}, vs={int(vs*100)}%)")
+
+        # ── 3단계: 자막 가리기 (drawbox) ──
+        if request.cover_enabled:
+            if request.cover_is_canvas_pct:
+                # 캔버스 모드: 좌표가 출력 캔버스 % 그대로
+                bx = int(out_w * request.cover_x / 100)
+                by = int(out_h * request.cover_y / 100)
+                bw = int(out_w * request.cover_w / 100)
+                bh = int(out_h * request.cover_h / 100)
+            else:
+                # 레거시: 원본 영상 기준 % → crop+scale+pad 후 최종 좌표로 변환
+                raw_cx = src_w * request.cover_x / 100
+                raw_cy = src_h * request.cover_y / 100
+                raw_cw = src_w * request.cover_w / 100
+                raw_ch = src_h * request.cover_h / 100
+
+                crop_px = src_w * request.crop_x / 100
+                crop_py = src_h * request.crop_y / 100
+                rel_cx = raw_cx - crop_px
+                rel_cy = raw_cy - crop_py
+
+                if needs_resize:
+                    scale_ratio = min(out_w / cropped_w, out_h / cropped_h)
+                    scaled_w = cropped_w * scale_ratio
+                    scaled_h = cropped_h * scale_ratio
+                    pad_x = (out_w - scaled_w) / 2
+                    pad_y = (out_h - scaled_h) / 2
+                else:
+                    scale_ratio = 1.0
+                    pad_x = 0
+                    pad_y = 0
+
+                bx = int(pad_x + rel_cx * scale_ratio)
+                by = int(pad_y + rel_cy * scale_ratio)
+                bw = int(raw_cw * scale_ratio)
+                bh = int(raw_ch * scale_ratio)
+
+            # 경계 클램핑
+            bx = max(0, min(bx, out_w - 1))
+            by = max(0, min(by, out_h - 1))
+            bw = max(1, min(bw, out_w - bx))
+            bh = max(1, min(bh, out_h - by))
+
+            color_hex = request.cover_color.lstrip("#")
+            opacity = round(request.cover_opacity, 2)
+            color_str = f"0x{color_hex}@{opacity}"
+            vf_filters.append(f"drawbox=x={bx}:y={by}:w={bw}:h={bh}:color={color_str}:t=fill")
+            logger.info(f"🟫 자막가리기: {bw}x{bh}+{bx}+{by} color={color_str}")
+
+        # 시작/끝 시간 계산
+        cmd = [ffmpeg_exe, "-y"]
+        if request.start > 0:
+            cmd += ["-ss", str(request.start)]
+        cmd += ["-i", src_path]
+        if request.end > 0 and request.end > request.start:
+            cmd += ["-t", str(request.end - request.start)]
+
+        if vf_filters:
+            cmd += ["-vf", ",".join(vf_filters)]
+            cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "fast"]
+        else:
+            cmd += ["-c:v", "copy"]
+
+        cmd += ["-c:a", "aac", "-avoid_negative_ts", "make_zero", clip_path]
+
+        logger.info(f"🎬 로컬 편집 시작: {' '.join(cmd)}")
+        duration = (request.end - request.start) if request.end > request.start else 600
+        timeout = max(120, int(duration) + 60)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            logger.error(f"ffmpeg stderr: {result.stderr[-500:]}")
+            raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+
+        if not os.path.exists(clip_path) or os.path.getsize(clip_path) == 0:
+            raise FileNotFoundError("편집된 클립 파일이 생성되지 않았습니다.")
+
+        filename = f"edited_{Path(request.media_path).stem}.mp4"
+        logger.info(f"✅ 로컬 편집 완료: {filename} ({os.path.getsize(clip_path)/1024/1024:.1f}MB)")
+
+        def cleanup():
+            import shutil as _shutil
+            _shutil.rmtree(temp_dir, ignore_errors=True)
+
+        background_tasks.add_task(cleanup)
+        return FileResponse(
+            clip_path, media_type="video/mp4", filename=filename,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+
+    except Exception as e:
+        import shutil as _shutil
+        _shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.error(f"❌ 로컬 편집 실패: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"로컬 편집에 실패했습니다: {str(e)}")
+
 # ─── 로컬 파일 업로드 엔드포인트 ──────────────────────────────────
 from fastapi import UploadFile, File
 from fastapi.staticfiles import StaticFiles

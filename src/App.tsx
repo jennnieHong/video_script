@@ -970,21 +970,22 @@ function App() {
   const saveOptionsRef = useRef<HTMLDivElement>(null);                   // 저장 옵션 드롭다운 DOM ref (외부 클릭 감지)
 
   // ─── 툴바 팔레트 (버튼 그룹 표시/숨김) ──────────────────────────
-  type ToolbarPanel = 'edit' | 'copy' | 'pronunciation' | 'save' | 'search' | 'compare';
+  type ToolbarPanel = 'edit' | 'copy' | 'pronunciation' | 'save' | 'search' | 'compare' | 'videoEdit';
   const TOOLBAR_PANEL_LABELS: Record<ToolbarPanel, string> = {
-    edit: '✏️ 편집 (▶ ◼ + 확정 ✂ 컷)',
+    edit: '✏️ 자막편집 (▶ ◼ + 확정 ✂ 컷)',
     copy: '📋 복사',
     pronunciation: '🗣️ 발음',
     save: '💾 저장 / 목록',
     search: '🔍 검색',
     compare: '🔀 비교',
+    videoEdit: '🎥 영상편집',
   };
   const [toolbarPanels, setToolbarPanels] = useState<Record<ToolbarPanel, boolean>>(() => {
     try {
       const saved = localStorage.getItem('yt-scribe-toolbar-panels');
       if (saved) return JSON.parse(saved);
     } catch { /* ignore */ }
-    return { edit: true, copy: true, pronunciation: true, save: true, search: true, compare: false };
+    return { edit: true, copy: true, pronunciation: true, save: true, search: true, compare: false, videoEdit: false };
   });
   const [showToolbarMenu, setShowToolbarMenu] = useState(false);
   const toolbarMenuRef = useRef<HTMLDivElement>(null);
@@ -995,6 +996,111 @@ function App() {
   const [compareSwapped, setCompareSwapped] = useState(false); // 좌우 컬럼 순서 반전
   const [compareMode, setCompareMode] = useState<'text' | 'both' | 'time'>('text'); // 비교 모드
   const compareInputRef = useRef<HTMLInputElement>(null);
+
+  // ─── 영상 편집 (Video Edit) ──────────────────────────────
+  const [showCropOverlay, setShowCropOverlay] = useState(false);
+  const [cropRect, setCropRect] = useState({ x: 10, y: 10, w: 80, h: 80 }); // % 기준
+  const [aspectRatio, setAspectRatio] = useState({ w: 0, h: 0 }); // 비율 (0=원본, 9:16, 4:5 등)
+  const [exportRes, setExportRes] = useState(1080); // 내보내기 해상도 (긴 변 기준)
+  // outputSize: 비율 + 해상도에서 자동 계산
+  const outputSize = useMemo(() => {
+    const { w: rw, h: rh } = aspectRatio;
+    if (rw === 0 || rh === 0) return { w: 0, h: 0 };
+    if (rw >= rh) {
+      // 가로형/정사각: 가로가 긴 변
+      const w = exportRes; const h = Math.round(exportRes * rh / rw);
+      return { w: w - (w % 2), h: h - (h % 2) };
+    } else {
+      // 세로형: 세로가 긴 변
+      const h = exportRes; const w = Math.round(exportRes * rw / rh);
+      return { w: w - (w % 2), h: h - (h % 2) };
+    }
+  }, [aspectRatio, exportRes]);
+  const [videoScale, setVideoScale] = useState(100); // 영상 크기 %
+  const [videoPan, setVideoPan] = useState({ x: 0, y: 0 }); // 드래그 오프셋
+  const [subtitleCoverEnabled, setSubtitleCoverEnabled] = useState(false);
+  const [subtitleCoverColor, setSubtitleCoverColor] = useState('#000000');
+  const [subtitleCoverOpacity, setSubtitleCoverOpacity] = useState(92); // 0~100%
+  const [subtitleCoverRect, setSubtitleCoverRect] = useState({ x: 5, y: 83, w: 90, h: 12 }); // % 기준
+
+  /**
+   * 컨테이너 % 좌표를 실제 영상 콘텐츠 % 좌표로 변환
+   * (object-fit: contain으로 인한 letterbox/pillarbox 오프셋 보정)
+   * containerEl: video-section 요소 또는 video 요소
+   * videoW, videoH: 영상의 실제 해상도
+   */
+  const containerToVideoCoords = useCallback((
+    rect: { x: number; y: number; w: number; h: number },
+    containerEl: HTMLElement | null,
+    videoW: number,
+    videoH: number,
+  ): { x: number; y: number; w: number; h: number } => {
+    if (!containerEl || videoW <= 0 || videoH <= 0) return rect;
+    const cW = containerEl.clientWidth;
+    const cH = containerEl.clientHeight;
+    if (cW <= 0 || cH <= 0) return rect;
+    // object-fit: contain → 비율 유지하며 영상 배치
+    const scale = Math.min(cW / videoW, cH / videoH);
+    const renderedW = videoW * scale;
+    const renderedH = videoH * scale;
+    const offsetXPct = ((cW - renderedW) / 2) / cW * 100;
+    const offsetYPct = ((cH - renderedH) / 2) / cH * 100;
+    const renderedWPct = renderedW / cW * 100;
+    const renderedHPct = renderedH / cH * 100;
+    return {
+      x: (rect.x - offsetXPct) / renderedWPct * 100,
+      y: (rect.y - offsetYPct) / renderedHPct * 100,
+      w: rect.w / renderedWPct * 100,
+      h: rect.h / renderedHPct * 100,
+    };
+  }, []);
+
+  /** Shift 스냅: 주요 위치(0,25,50,75,100%)에 자석 효과 */
+  const snapVal = useCallback((v: number, snap: boolean, threshold = 3): number => {
+    if (!snap) return v;
+    const pts = [0, 25, 50, 75, 100];
+    for (const p of pts) { if (Math.abs(v - p) < threshold) return p; }
+    return v;
+  }, []);
+
+  /** 크롭 박스를 영상 콘텐츠 영역으로 초기화 (CSS letterbox 제외) */
+  const applyCropFillMode = useCallback((_outW: number, _outH: number) => {
+    setShowCropOverlay(true);
+    // 캔버스 aspect-ratio 적용 후 컨테이너 크기를 읽어야 하므로 약간의 딜레이
+    setTimeout(() => {
+      const container = document.querySelector('.video-section') as HTMLElement;
+      if (!container) return;
+      const cW = container.clientWidth;
+      const cH = container.clientHeight;
+      if (cW <= 0 || cH <= 0) return;
+      let videoW = 1920, videoH = 1080;
+      const vid = localVideoRef.current;
+      if (vid && vid.videoWidth > 0) { videoW = vid.videoWidth; videoH = vid.videoHeight; }
+      // 영상이 캔버스 컨테이너 내에서 차지하는 영역 (object-fit: contain)
+      const vScale = Math.min(cW / videoW, cH / videoH);
+      const renderedW = videoW * vScale;
+      const renderedH = videoH * vScale;
+      const vidOffX = (cW - renderedW) / 2;
+      const vidOffY = (cH - renderedH) / 2;
+      // 크롭 박스 = 영상 전체 (컨테이너 % 기준)
+      setCropRect({
+        x: vidOffX / cW * 100,
+        y: vidOffY / cH * 100,
+        w: renderedW / cW * 100,
+        h: renderedH / cH * 100,
+      });
+    }, 200);
+  }, []);
+
+  /** 프리셋 비율 선택 → 캔버스 모드 전환 */
+  const selectOutputPreset = useCallback((rw: number, rh: number) => {
+    setAspectRatio({ w: rw, h: rh });
+    setVideoScale(100); // 스케일 리셋
+    setVideoPan({ x: 0, y: 0 }); // 팬 리셋
+    // 캔버스 모드: 크롭 불필요 (캔버스 = 출력)
+    setShowCropOverlay(false);
+    setCropRect({ x: 0, y: 0, w: 100, h: 100 });
+  }, []);
 
   // 팔레트 변경 시 localStorage 저장
   useEffect(() => {
@@ -3711,9 +3817,11 @@ function App() {
                   top: floatingVideoPos.y,
                   width: floatingVideoPos.w,
                   height: floatingVideoPos.h,
+                  ...(showCropOverlay && aspectRatio.w === 0 && (cropRect.y < 0 || cropRect.y + cropRect.h > 100 || cropRect.x < 0 || cropRect.x + cropRect.w > 100) ? { overflow: 'auto' as const } : {}),
                 } : {
                   height: `${layoutSizes.videoRatio}%`,
                   maxHeight: 'none',
+                  ...(showCropOverlay && aspectRatio.w === 0 && (cropRect.y < 0 || cropRect.y + cropRect.h > 100 || cropRect.x < 0 || cropRect.x + cropRect.w > 100) ? { overflow: 'auto' as const } : {}),
                 }}
               >
                 {/* 플로팅 상단 드래그 바 */}
@@ -3736,18 +3844,239 @@ function App() {
                     <span className="video-grab-dots">⣿⣿⣿</span>
                   </div>
                 )}
-                {localMediaUrl ? (
-                  <div className="video-section">
+                {localMediaUrl ? (<>
+                  {/* 크롭 확장 wrapper: 좌우 스페이서 + 상하 스페이서 */}
+                  <div style={{ display: 'flex', flexDirection: 'row' as const, minWidth: '100%', minHeight: '100%' }}>
+                    {/* 좌측 스페이서 */}
+                    {showCropOverlay && cropRect.x < 0 && (
+                      <div style={{ flexShrink: 0, width: `${Math.abs(cropRect.x)}%`, background: '#000' }} />
+                    )}
+                    <div style={{ display: 'flex', flexDirection: 'column' as const, flex: '0 0 100%' }}>
+                      {/* 상단 스페이서 */}
+                      {showCropOverlay && cropRect.y < 0 && (
+                        <div style={{ height: `${Math.abs(cropRect.y)}%`, flexShrink: 0, background: '#000' }} />
+                      )}
+                      <div className={`video-section${showCropOverlay ? ' crop-mode' : ''}`} style={{
+                        position: 'relative', background: '#000', borderRadius: '0.5rem',
+                        ...(aspectRatio.w > 0 && aspectRatio.h > 0 ? {
+                          flex: 'none',
+                          aspectRatio: `${aspectRatio.w}/${aspectRatio.h}`,
+                          maxHeight: '100%',
+                          width: 'auto',
+                          margin: '0 auto',
+                          overflow: 'hidden',
+                        } : {}),
+                        ...(showCropOverlay && aspectRatio.w === 0 && (cropRect.y < 0 || cropRect.y + cropRect.h > 100 || cropRect.x < 0 || cropRect.x + cropRect.w > 100) ? { flex: '0 0 100%', overflow: 'visible' } : {}),
+                      }}>
                     <video
                       ref={localVideoRef}
                       src={localMediaUrl}
                       controls
                       onKeyDown={(e) => { if (e.code === 'Space') e.preventDefault(); }}
-                      style={{ width: '100%', height: '100%', objectFit: 'contain', background: '#000', borderRadius: '0.5rem' }}
+                      style={{
+                        width: '100%', height: '100%', objectFit: 'contain', background: 'transparent', borderRadius: '0.5rem',
+                        ...(outputSize.w > 0 && videoScale !== 100 ? {
+                          transform: `translate(${videoPan.x}%, ${videoPan.y}%) scale(${videoScale / 100})`,
+                          transformOrigin: 'center center',
+                        } : {}),
+                      }}
                     />
+
+                    {/* 확대 시 드래그 오버레이 — 영상 위치 조절 */}
+                    {outputSize.w > 0 && videoScale > 100 && (
+                      <div
+                        style={{
+                          position: 'absolute', inset: 0, cursor: 'grab', zIndex: 10,
+                        }}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          const startX = e.clientX;
+                          const startY = e.clientY;
+                          const startPan = { ...videoPan };
+                          const container = e.currentTarget.parentElement;
+                          if (!container) return;
+                          const cW = container.clientWidth;
+                          const cH = container.clientHeight;
+                          // 최대 이동 범위 (스케일에 따라 제한)
+                          const maxPanX = (videoScale - 100) / 2;
+                          const maxPanY = (videoScale - 100) / 2;
+                          const onMove = (me: MouseEvent) => {
+                            const dx = ((me.clientX - startX) / cW) * 100;
+                            const dy = ((me.clientY - startY) / cH) * 100;
+                            setVideoPan({
+                              x: Math.max(-maxPanX, Math.min(maxPanX, startPan.x + dx)),
+                              y: Math.max(-maxPanY, Math.min(maxPanY, startPan.y + dy)),
+                            });
+                          };
+                          const onUp = () => {
+                            window.removeEventListener('mousemove', onMove);
+                            window.removeEventListener('mouseup', onUp);
+                          };
+                          window.addEventListener('mousemove', onMove);
+                          window.addEventListener('mouseup', onUp);
+                        }}
+                      />
+                    )}
+                    {/* 크롭 오버레이 */}
+                    {showCropOverlay && (
+                      <div
+                        className="crop-overlay"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          // 크롭 수동 조작 시 비율 프리셋 해제
+                          if (aspectRatio.w > 0) { setAspectRatio({ w: 0, h: 0 }); setVideoScale(100); setVideoPan({ x: 0, y: 0 }); }
+                          const container = e.currentTarget;
+                          const rect = container.getBoundingClientRect();
+                          const startX = ((e.clientX - rect.left) / rect.width) * 100;
+                          const startY = ((e.clientY - rect.top) / rect.height) * 100;
+                          const onMove = (me: MouseEvent) => {
+                            const curX = ((me.clientX - rect.left) / rect.width) * 100;
+                            const curY = ((me.clientY - rect.top) / rect.height) * 100;
+                            const s = me.shiftKey;
+                            setCropRect({
+                              x: snapVal(Math.min(startX, curX), s),
+                              y: snapVal(Math.min(startY, curY), s),
+                              w: snapVal(Math.abs(curX - startX), s),
+                              h: snapVal(Math.abs(curY - startY), s),
+                            });
+                          };
+                          const onUp = () => { document.body.style.userSelect = ''; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                          document.body.style.userSelect = 'none';
+                          window.addEventListener('mousemove', onMove);
+                          window.addEventListener('mouseup', onUp);
+                        }}
+                      >
+                        <div className="crop-mask crop-mask-top" style={{ height: `${cropRect.y}%` }} />
+                        <div className="crop-mask crop-mask-bottom" style={{ top: `${cropRect.y + cropRect.h}%`, height: `${100 - cropRect.y - cropRect.h}%` }} />
+                        <div className="crop-mask crop-mask-left" style={{ top: `${cropRect.y}%`, height: `${cropRect.h}%`, width: `${cropRect.x}%` }} />
+                        <div className="crop-mask crop-mask-right" style={{ top: `${cropRect.y}%`, height: `${cropRect.h}%`, left: `${cropRect.x + cropRect.w}%`, width: `${100 - cropRect.x - cropRect.w}%` }} />
+                        <div
+                          className="crop-selection"
+                          style={{ left: `${cropRect.x}%`, top: `${cropRect.y}%`, width: `${cropRect.w}%`, height: `${cropRect.h}%` }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            e.preventDefault();
+                            // 크롭 수동 조작 시 비율 프리셋 해제
+                            if (aspectRatio.w > 0) { setAspectRatio({ w: 0, h: 0 }); setVideoScale(100); setVideoPan({ x: 0, y: 0 }); }
+                            const container = e.currentTarget.parentElement!;
+                            const cRect = container.getBoundingClientRect();
+                            const offsetX = ((e.clientX - cRect.left) / cRect.width) * 100 - cropRect.x;
+                            const offsetY = ((e.clientY - cRect.top) / cRect.height) * 100 - cropRect.y;
+                            const onMove = (me: MouseEvent) => {
+                              const newX = snapVal(((me.clientX - cRect.left) / cRect.width) * 100 - offsetX, me.shiftKey);
+                              const newY = snapVal(((me.clientY - cRect.top) / cRect.height) * 100 - offsetY, me.shiftKey);
+                              setCropRect(prev => ({ ...prev, x: newX, y: newY }));
+                            };
+                            const onUp = () => { document.body.style.userSelect = ''; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                            document.body.style.userSelect = 'none';
+                            window.addEventListener('mousemove', onMove);
+                            window.addEventListener('mouseup', onUp);
+                          }}
+                        >
+                          <div className="crop-info">{outputSize.w > 0 ? `${outputSize.w}×${outputSize.h}` : (localVideoRef.current ? `${Math.round((localVideoRef.current.videoWidth||1920)*cropRect.w/100)}×${Math.round((localVideoRef.current.videoHeight||1080)*cropRect.h/100)}` : `${Math.round(cropRect.w)}% × ${Math.round(cropRect.h)}%`)}</div>
+                          {(['nw','n','ne','w','e','sw','s','se'] as const).map(dir => (
+                            <div
+                              key={dir}
+                              className={`crop-handle crop-handle-${dir}`}
+                              onMouseDown={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                // 크롭 수동 조작 시 비율 프리셋 해제
+                                if (aspectRatio.w > 0) { setAspectRatio({ w: 0, h: 0 }); setVideoScale(100); setVideoPan({ x: 0, y: 0 }); }
+                                const container = e.currentTarget.closest('.crop-overlay')!;
+                                const cRect = container.getBoundingClientRect();
+                                const startMouse = { x: e.clientX, y: e.clientY };
+                                const startCrop = { ...cropRect };
+                                const onMove = (me: MouseEvent) => {
+                                  const dx = ((me.clientX - startMouse.x) / cRect.width) * 100;
+                                  const dy = ((me.clientY - startMouse.y) / cRect.height) * 100;
+                                  const s = me.shiftKey;
+                                  const next = { ...startCrop };
+                                  if (dir.includes('w')) { next.x = snapVal(Math.min(startCrop.x + startCrop.w - 2, startCrop.x + dx), s); next.w = startCrop.w - (next.x - startCrop.x); }
+                                  if (dir.includes('e')) { next.w = snapVal(Math.max(2, startCrop.w + dx), s); }
+                                  if (dir.includes('n')) { next.y = snapVal(Math.min(startCrop.y + startCrop.h - 2, startCrop.y + dy), s); next.h = startCrop.h - (next.y - startCrop.y); }
+                                  if (dir === 's' || dir === 'se' || dir === 'sw') { next.h = snapVal(Math.max(2, startCrop.h + dy), s); }
+                                  setCropRect(next);
+                                };
+                                const onUp = () => { document.body.style.userSelect = ''; window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                                document.body.style.userSelect = 'none';
+                                window.addEventListener('mousemove', onMove);
+                                window.addEventListener('mouseup', onUp);
+                              }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 자막 가리기 */}
+                    {subtitleCoverEnabled && (
+                      <div
+                        className="subtitle-cover-overlay"
+                        style={{
+                          backgroundColor: subtitleCoverColor,
+                          opacity: subtitleCoverOpacity / 100,
+                          left: `${subtitleCoverRect.x}%`, top: `${subtitleCoverRect.y}%`,
+                          width: `${subtitleCoverRect.w}%`, height: `${subtitleCoverRect.h}%`,
+                        }}
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          const container = e.currentTarget.parentElement!;
+                          const cRect = container.getBoundingClientRect();
+                          const offsetX = ((e.clientX - cRect.left) / cRect.width) * 100 - subtitleCoverRect.x;
+                          const offsetY = ((e.clientY - cRect.top) / cRect.height) * 100 - subtitleCoverRect.y;
+                          const onMove = (me: MouseEvent) => {
+                            const newX = snapVal(((me.clientX - cRect.left) / cRect.width) * 100 - offsetX, me.shiftKey);
+                            const newY = snapVal(((me.clientY - cRect.top) / cRect.height) * 100 - offsetY, me.shiftKey);
+                            setSubtitleCoverRect(prev => ({ ...prev, x: newX, y: newY }));
+                          };
+                          const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                          window.addEventListener('mousemove', onMove);
+                          window.addEventListener('mouseup', onUp);
+                        }}
+                      >
+                        {(['nw','ne','sw','se'] as const).map(dir => (
+                          <div
+                            key={dir}
+                            className={`crop-handle crop-handle-${dir}`}
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                              const container = e.currentTarget.closest('.video-section')!;
+                              const cRect = container.getBoundingClientRect();
+                              const startMouse = { x: e.clientX, y: e.clientY };
+                              const startRect = { ...subtitleCoverRect };
+                              const onMove = (me: MouseEvent) => {
+                                const dx = ((me.clientX - startMouse.x) / cRect.width) * 100;
+                                const dy = ((me.clientY - startMouse.y) / cRect.height) * 100;
+                                const s = me.shiftKey;
+                                const next = { ...startRect };
+                                if (dir.includes('w')) { next.x = snapVal(Math.min(startRect.x + startRect.w - 5, startRect.x + dx), s); next.w = startRect.w - (next.x - startRect.x); }
+                                if (dir.includes('e')) { next.w = snapVal(Math.max(5, startRect.w + dx), s); }
+                                if (dir.includes('n')) { next.y = snapVal(Math.min(startRect.y + startRect.h - 3, startRect.y + dy), s); next.h = startRect.h - (next.y - startRect.y); }
+                                if (dir.includes('s')) { next.h = snapVal(Math.max(3, startRect.h + dy), s); }
+                                setSubtitleCoverRect(next);
+                              };
+                              const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                              window.addEventListener('mousemove', onMove);
+                              window.addEventListener('mouseup', onUp);
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
-                ) : videoId && (
-                  <div className="video-section">
+                  {/* 크롭 하단 확장 스페이서 */}
+                  {showCropOverlay && (cropRect.y + cropRect.h > 100) && (
+                    <div style={{ height: `${cropRect.y + cropRect.h - 100}%`, flexShrink: 0, background: '#000' }} />
+                  )}
+                    </div>
+                    {/* 우측 스페이서 */}
+                    {showCropOverlay && cropRect.x + cropRect.w > 100 && (
+                      <div style={{ flexShrink: 0, width: `${cropRect.x + cropRect.w - 100}%`, background: '#000' }} />
+                    )}
+                  </div>
+                </>) : videoId && (
+                  <div className={`video-section${showCropOverlay ? ' crop-mode' : ''}`} style={{ position: 'relative' }}>
                     <LoopPlayer
                       key={`player-${videoId}`}
                       videoId={videoId}
@@ -3763,6 +4092,186 @@ function App() {
                       formatTimestamp={formatTimestamp}
                       onPlayerReady={(player) => { loopPlayerRef.current = player; }}
                     />
+
+                    {/* 크롭 오버레이 */}
+                    {showCropOverlay && (
+                      <div
+                        className="crop-overlay"
+                        onMouseDown={(e) => {
+                          // 크롭 영역 밖 클릭 시 드래그로 영역 생성
+                          const container = e.currentTarget;
+                          const rect = container.getBoundingClientRect();
+                          const startX = ((e.clientX - rect.left) / rect.width) * 100;
+                          const startY = ((e.clientY - rect.top) / rect.height) * 100;
+
+                          const onMove = (me: MouseEvent) => {
+                            const curX = ((me.clientX - rect.left) / rect.width) * 100;
+                            const curY = ((me.clientY - rect.top) / rect.height) * 100;
+                            const s = me.shiftKey;
+                            setCropRect({
+                              x: snapVal(Math.max(0, Math.min(startX, curX)), s),
+                              y: snapVal(Math.max(0, Math.min(startY, curY)), s),
+                              w: snapVal(Math.min(100, Math.abs(curX - startX)), s),
+                              h: snapVal(Math.min(100, Math.abs(curY - startY)), s),
+                            });
+                          };
+                          const onUp = () => {
+                            window.removeEventListener('mousemove', onMove);
+                            window.removeEventListener('mouseup', onUp);
+                          };
+                          window.addEventListener('mousemove', onMove);
+                          window.addEventListener('mouseup', onUp);
+                        }}
+                      >
+                        {/* 어둡게 마스킹 (크롭 영역 바깥) */}
+                        <div className="crop-mask crop-mask-top" style={{ height: `${cropRect.y}%` }} />
+                        <div className="crop-mask crop-mask-bottom" style={{ top: `${cropRect.y + cropRect.h}%`, height: `${100 - cropRect.y - cropRect.h}%` }} />
+                        <div className="crop-mask crop-mask-left" style={{ top: `${cropRect.y}%`, height: `${cropRect.h}%`, width: `${cropRect.x}%` }} />
+                        <div className="crop-mask crop-mask-right" style={{ top: `${cropRect.y}%`, height: `${cropRect.h}%`, left: `${cropRect.x + cropRect.w}%`, width: `${100 - cropRect.x - cropRect.w}%` }} />
+
+                        {/* 크롭 선택 영역 */}
+                        <div
+                          className="crop-selection"
+                          style={{
+                            left: `${cropRect.x}%`, top: `${cropRect.y}%`,
+                            width: `${cropRect.w}%`, height: `${cropRect.h}%`,
+                          }}
+                          onMouseDown={(e) => {
+                            e.stopPropagation();
+                            const container = e.currentTarget.parentElement!;
+                            const cRect = container.getBoundingClientRect();
+                            const offsetX = ((e.clientX - cRect.left) / cRect.width) * 100 - cropRect.x;
+                            const offsetY = ((e.clientY - cRect.top) / cRect.height) * 100 - cropRect.y;
+
+                            const onMove = (me: MouseEvent) => {
+                              const newX = snapVal(Math.max(0, Math.min(100 - cropRect.w, ((me.clientX - cRect.left) / cRect.width) * 100 - offsetX)), me.shiftKey);
+                              const newY = snapVal(Math.max(0, Math.min(100 - cropRect.h, ((me.clientY - cRect.top) / cRect.height) * 100 - offsetY)), me.shiftKey);
+                              setCropRect(prev => ({ ...prev, x: newX, y: newY }));
+                            };
+                            const onUp = () => {
+                              window.removeEventListener('mousemove', onMove);
+                              window.removeEventListener('mouseup', onUp);
+                            };
+                            window.addEventListener('mousemove', onMove);
+                            window.addEventListener('mouseup', onUp);
+                          }}
+                        >
+                          <div className="crop-info">
+                            {outputSize.w > 0 ? `${outputSize.w}×${outputSize.h}` : `${Math.round(cropRect.w)}% × ${Math.round(cropRect.h)}%`}
+                          </div>
+                          {/* 리사이즈 핸들 (8방향) */}
+                          {(['nw','n','ne','w','e','sw','s','se'] as const).map(dir => (
+                            <div
+                              key={dir}
+                              className={`crop-handle crop-handle-${dir}`}
+                              onMouseDown={(e) => {
+                                e.stopPropagation();
+                                const container = e.currentTarget.closest('.crop-overlay')!;
+                                const cRect = container.getBoundingClientRect();
+
+                                const startMouse = { x: e.clientX, y: e.clientY };
+                                const startCrop = { ...cropRect };
+
+                                const onMove = (me: MouseEvent) => {
+                                  const dx = ((me.clientX - startMouse.x) / cRect.width) * 100;
+                                  const dy = ((me.clientY - startMouse.y) / cRect.height) * 100;
+                                  const s = me.shiftKey;
+                                  const next = { ...startCrop };
+
+                                  // 좌측 변
+                                  if (dir.includes('w')) {
+                                    next.x = snapVal(Math.max(0, Math.min(startCrop.x + startCrop.w - 2, startCrop.x + dx)), s);
+                                    next.w = startCrop.w - (next.x - startCrop.x);
+                                  }
+                                  // 우측 변
+                                  if (dir.includes('e')) {
+                                    next.w = snapVal(Math.max(2, Math.min(100 - startCrop.x, startCrop.w + dx)), s);
+                                  }
+                                  // 상단 변
+                                  if (dir.includes('n')) {
+                                    next.y = snapVal(Math.max(0, Math.min(startCrop.y + startCrop.h - 2, startCrop.y + dy)), s);
+                                    next.h = startCrop.h - (next.y - startCrop.y);
+                                  }
+                                  // 하단 변
+                                  if (dir === 's' || dir === 'se' || dir === 'sw') {
+                                    next.h = snapVal(Math.max(2, Math.min(100 - startCrop.y, startCrop.h + dy)), s);
+                                  }
+
+                                  setCropRect(next);
+                                };
+                                const onUp = () => {
+                                  window.removeEventListener('mousemove', onMove);
+                                  window.removeEventListener('mouseup', onUp);
+                                };
+                                window.addEventListener('mousemove', onMove);
+                                window.addEventListener('mouseup', onUp);
+                              }}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 자막 가리기 오버레이 */}
+                    {subtitleCoverEnabled && (
+                      <div
+                        className="subtitle-cover-overlay"
+                        style={{
+                          backgroundColor: subtitleCoverColor,
+                          opacity: subtitleCoverOpacity / 100,
+                          left: `${subtitleCoverRect.x}%`,
+                          top: `${subtitleCoverRect.y}%`,
+                          width: `${subtitleCoverRect.w}%`,
+                          height: `${subtitleCoverRect.h}%`,
+                        }}
+                        onMouseDown={(e) => {
+                          e.stopPropagation();
+                          const container = e.currentTarget.parentElement!;
+                          const cRect = container.getBoundingClientRect();
+                          const offsetX = ((e.clientX - cRect.left) / cRect.width) * 100 - subtitleCoverRect.x;
+                          const offsetY = ((e.clientY - cRect.top) / cRect.height) * 100 - subtitleCoverRect.y;
+
+                          const onMove = (me: MouseEvent) => {
+                            const newX = snapVal(Math.max(0, Math.min(100 - subtitleCoverRect.w, ((me.clientX - cRect.left) / cRect.width) * 100 - offsetX)), me.shiftKey);
+                            const newY = snapVal(Math.max(0, Math.min(100 - subtitleCoverRect.h, ((me.clientY - cRect.top) / cRect.height) * 100 - offsetY)), me.shiftKey);
+                            setSubtitleCoverRect(prev => ({ ...prev, x: newX, y: newY }));
+                          };
+                          const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                          window.addEventListener('mousemove', onMove);
+                          window.addEventListener('mouseup', onUp);
+                        }}
+                      >
+                        {/* 리사이즈 핸들 (4 모서리) */}
+                        {(['nw','ne','sw','se'] as const).map(dir => (
+                          <div
+                            key={dir}
+                            className={`crop-handle crop-handle-${dir}`}
+                            onMouseDown={(e) => {
+                              e.stopPropagation();
+                              const container = e.currentTarget.closest('.video-section')!;
+                              const cRect = container.getBoundingClientRect();
+                              const startMouse = { x: e.clientX, y: e.clientY };
+                              const startRect = { ...subtitleCoverRect };
+
+                              const onMove = (me: MouseEvent) => {
+                                const dx = ((me.clientX - startMouse.x) / cRect.width) * 100;
+                                const dy = ((me.clientY - startMouse.y) / cRect.height) * 100;
+                                const s = me.shiftKey;
+                                const next = { ...startRect };
+                                if (dir.includes('w')) { next.x = snapVal(Math.max(0, Math.min(startRect.x + startRect.w - 5, startRect.x + dx)), s); next.w = startRect.w - (next.x - startRect.x); }
+                                if (dir.includes('e')) { next.w = snapVal(Math.max(5, Math.min(100 - startRect.x, startRect.w + dx)), s); }
+                                if (dir.includes('n')) { next.y = snapVal(Math.max(0, Math.min(startRect.y + startRect.h - 3, startRect.y + dy)), s); next.h = startRect.h - (next.y - startRect.y); }
+                                if (dir.includes('s')) { next.h = snapVal(Math.max(3, Math.min(100 - startRect.y, startRect.h + dy)), s); }
+                                setSubtitleCoverRect(next);
+                              };
+                              const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                              window.addEventListener('mousemove', onMove);
+                              window.addEventListener('mouseup', onUp);
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
                 {/* 플로팅 리사이즈 핸들 */}
@@ -3776,6 +4285,7 @@ function App() {
                   </>
                 )}
               </div>
+              <div style={{ flex: 1, overflowY: 'auto' as const, minHeight: 0, display: 'flex', flexDirection: 'column' as const }}>
               {/* 파형이 있으면: 구분선1(영상↔파형) */}
               {localMediaUrl && !isVideoFloating && (
                 <div className="resize-handle resize-handle-h" onMouseDown={handleResizeStart('video')} />
@@ -3837,7 +4347,7 @@ function App() {
                   disabled={segments.length === 0}
                 >
                   <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                  편집
+                  자막편집
                 </button>
                 {isEditMode && (
                   <>
@@ -4509,6 +5019,225 @@ function App() {
                 />
                 </>)}
 
+                {/* ── 영상편집 그룹 ── */}
+                {toolbarPanels.videoEdit && (<>
+                <div className="divider-v" />
+                <button
+                  className={`btn-icon${showCropOverlay ? ' active' : ''}`}
+                  onClick={() => setShowCropOverlay(v => !v)}
+                  title="출력 프레임 크기 설정 (letterbox)"
+                >
+                  <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M6.13 1L6 16a2 2 0 0 0 2 2h15"/>
+                    <path d="M1 6.13L16 6a2 2 0 0 1 2 2v15"/>
+                  </svg>
+                  프레임
+                </button>
+                {(showCropOverlay || subtitleCoverEnabled || (aspectRatio.w > 0 && aspectRatio.h > 0)) && (<>
+                  <button className="btn-icon btn-icon-sm" onClick={() => selectOutputPreset(9, 16)} title="9:16 세로 (숏폼)" style={aspectRatio.w === 9 && aspectRatio.h === 16 ? { background: 'rgba(124,58,237,0.25)', borderColor: 'rgba(124,58,237,0.5)' } : {}}>9:16</button>
+                  <button className="btn-icon btn-icon-sm" onClick={() => selectOutputPreset(4, 5)} title="4:5 (인스타)" style={aspectRatio.w === 4 && aspectRatio.h === 5 ? { background: 'rgba(124,58,237,0.25)', borderColor: 'rgba(124,58,237,0.5)' } : {}}>4:5</button>
+                  <button className="btn-icon btn-icon-sm" onClick={() => selectOutputPreset(1, 1)} title="1:1 정사각" style={aspectRatio.w === 1 && aspectRatio.h === 1 ? { background: 'rgba(124,58,237,0.25)', borderColor: 'rgba(124,58,237,0.5)' } : {}}>1:1</button>
+                  <button className="btn-icon btn-icon-sm" onClick={() => selectOutputPreset(16, 9)} title="16:9 가로" style={aspectRatio.w === 16 && aspectRatio.h === 9 ? { background: 'rgba(124,58,237,0.25)', borderColor: 'rgba(124,58,237,0.5)' } : {}}>16:9</button>
+                  <button className="btn-icon btn-icon-sm" onClick={() => selectOutputPreset(0, 0)} title="원본 크기" style={aspectRatio.w === 0 && aspectRatio.h === 0 ? { background: 'rgba(124,58,237,0.25)', borderColor: 'rgba(124,58,237,0.5)' } : {}}>원본</button>
+                  {/* 해상도 선택 — 비율이 설정됐을 때만 표시 */}
+                  {aspectRatio.w > 0 && aspectRatio.h > 0 && (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: '0.6rem', color: 'rgba(255,255,255,0.5)', marginLeft: 2 }}>
+                      <select
+                        value={exportRes}
+                        onChange={(e) => setExportRes(Number(e.target.value))}
+                        style={{ background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.15)', borderRadius: 3, color: 'var(--text-primary)', fontSize: '0.6rem', padding: '2px 4px', cursor: 'pointer' }}
+                      >
+                        <option value={720}>720p</option>
+                        <option value={1080}>1080p</option>
+                        <option value={1440}>1440p</option>
+                        <option value={1920}>1920p</option>
+                        <option value={3840}>4K</option>
+                      </select>
+                      <span style={{ fontSize: '0.55rem', opacity: 0.6 }}>{outputSize.w}×{outputSize.h}</span>
+                    </span>
+                  )}
+                  {/* 영상 크기 슬라이더 — 비율 선택 시 표시 */}
+                  {aspectRatio.w > 0 && aspectRatio.h > 0 && (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.6rem', color: 'rgba(255,255,255,0.5)', marginLeft: 4 }}>
+                      🔍
+                      <input
+                        type="range"
+                        min={10} max={200} step={5}
+                        value={videoScale}
+                        onChange={(e) => { setVideoScale(Number(e.target.value)); setVideoPan({ x: 0, y: 0 }); }}
+                        title={`영상 크기 ${videoScale}% (100%=맞춤, <100%=여백 추가, >100%=확대)`}
+                        style={{ width: 70, height: 3, cursor: 'pointer', accentColor: '#7c3aed' }}
+                      />
+                      <span
+                        style={{ cursor: 'pointer', minWidth: 32, textAlign: 'right' }}
+                        onClick={() => { setVideoScale(100); setVideoPan({ x: 0, y: 0 }); }}
+                        title="클릭하면 100%로 초기화"
+                      >{videoScale}%</span>
+                    </span>
+                  )}
+                </>)}
+                <button
+                  className={`btn-icon${subtitleCoverEnabled ? ' active' : ''}`}
+                  onClick={() => setSubtitleCoverEnabled(v => !v)}
+                  title="자막 영역 가리기"
+                >
+                  <svg style={{ width: 13, height: 13 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <rect x="3" y="16" width="18" height="5" rx="1"/>
+                    <line x1="1" y1="1" x2="23" y2="23"/>
+                  </svg>
+                  자막가리기
+                </button>
+                {subtitleCoverEnabled && (
+                  <>
+                  <input
+                    type="color"
+                    value={subtitleCoverColor}
+                    onChange={(e) => setSubtitleCoverColor(e.target.value)}
+                    title="자막 가리기 색상"
+                    style={{ width: 24, height: 24, border: 'none', cursor: 'pointer', borderRadius: 4, padding: 0 }}
+                  />
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.65rem', color: 'rgba(255,255,255,0.6)' }}>
+                    <input
+                      type="range"
+                      min={0} max={100} step={1}
+                      value={subtitleCoverOpacity}
+                      onChange={(e) => setSubtitleCoverOpacity(Number(e.target.value))}
+                      title={`투명도 ${subtitleCoverOpacity}%`}
+                      style={{ width: 50, height: 3, cursor: 'pointer', accentColor: '#7c3aed' }}
+                    />
+                    {subtitleCoverOpacity}%
+                  </span>
+                  </>
+                )}
+                {/* 편집 다운로드 버튼 (프레임/자막가리기/비율 활성 시) */}
+                {(showCropOverlay || subtitleCoverEnabled || (outputSize.w > 0 && outputSize.h > 0)) && (
+                  <button
+                    className="btn-icon"
+                    style={{ background: 'rgba(124,58,237,0.15)', borderColor: 'rgba(124,58,237,0.4)', color: '#a78bfa', gap: '0.3rem' }}
+                    title="현재 편집 설정 적용하여 영상 다운로드"
+                    onClick={async () => {
+                      const isLocal = !!localMediaUrl;
+                      const start = loopSegment ? loopSegment.start : 0;
+                      const end = loopSegment ? loopSegment.end : 0;
+                      const filename = isLocal
+                        ? `edited_${localFileName || 'clip'}.mp4`
+                        : `edited_${videoId || 'clip'}.mp4`;
+
+                      // ── 좌표 변환: 컨테이너 % → 실제 영상 콘텐츠 % ──
+                      let videoW = 1920, videoH = 1080;
+                      let containerEl: HTMLElement | null = null;
+                      if (isLocal && localVideoRef.current) {
+                        videoW = localVideoRef.current.videoWidth || 1920;
+                        videoH = localVideoRef.current.videoHeight || 1080;
+                        containerEl = localVideoRef.current.closest('.video-section') as HTMLElement;
+                      } else {
+                        // YouTube: 16:9 가정
+                        videoW = clipQuality === '1080' ? 1920 : clipQuality === '480' ? 854 : clipQuality === '360' ? 640 : 1280;
+                        videoH = clipQuality === '1080' ? 1080 : clipQuality === '480' ? 480 : clipQuality === '360' ? 360 : 720;
+                        containerEl = document.querySelector('.video-section') as HTMLElement;
+                      }
+                      const adjCrop = containerToVideoCoords(cropRect, containerEl, videoW, videoH);
+                      const adjCover = containerToVideoCoords(subtitleCoverRect, containerEl, videoW, videoH);
+
+                      // 캔버스 모드 여부 (출력 비율이 설정됨)
+                      const isCanvasMode = outputSize.w > 0 && outputSize.h > 0;
+
+                      // 크롭 적용 여부: 크롭 오버레이 활성일 때
+                      const applyCrop = showCropOverlay;
+
+                      // 출력 크기 결정 (변환된 크롭 기준)
+                      let outW = outputSize.w;
+                      let outH = outputSize.h;
+                      if (outW === 0 && outH === 0 && applyCrop) {
+                        outW = Math.round(videoW * adjCrop.w / 100);
+                        outH = Math.round(videoH * adjCrop.h / 100);
+                        outW = outW - (outW % 2);
+                        outH = outH - (outH % 2);
+                      }
+
+                      let apiUrl: string;
+                      let body: Record<string, any>;
+
+                      // 캔버스 모드: cover 좌표를 캔버스 % 그대로 전달
+                      const coverCoords = isCanvasMode
+                        ? subtitleCoverRect  // 캔버스 % 그대로
+                        : adjCover;          // 영상 콘텐츠 % 변환됨
+
+                      if (isLocal) {
+                        apiUrl = 'http://localhost:8000/clip-local';
+                        const mediaPath = new URL(localMediaUrl).pathname;
+                        body = {
+                          media_path: mediaPath,
+                          start, end,
+                          output_w: outW,
+                          output_h: outH,
+                          crop_x: applyCrop ? adjCrop.x : 0,
+                          crop_y: applyCrop ? adjCrop.y : 0,
+                          crop_w: applyCrop ? adjCrop.w : 100,
+                          crop_h: applyCrop ? adjCrop.h : 100,
+                          cover_enabled: subtitleCoverEnabled,
+                          cover_x: coverCoords.x,
+                          cover_y: coverCoords.y,
+                          cover_w: coverCoords.w,
+                          cover_h: coverCoords.h,
+                          cover_color: subtitleCoverColor,
+                          cover_opacity: subtitleCoverOpacity / 100,
+                          video_scale: videoScale / 100,
+                          cover_is_canvas_pct: isCanvasMode,
+                          pan_x: videoPan.x,
+                          pan_y: videoPan.y,
+                        };
+                      } else {
+                        apiUrl = 'http://localhost:8000/clip-edit';
+                        body = {
+                          url: `https://www.youtube.com/watch?v=${videoId}`,
+                          start, end,
+                          quality: clipQuality,
+                          output_w: outW,
+                          output_h: outH,
+                          crop_x: applyCrop ? adjCrop.x : 0,
+                          crop_y: applyCrop ? adjCrop.y : 0,
+                          crop_w: applyCrop ? adjCrop.w : 100,
+                          crop_h: applyCrop ? adjCrop.h : 100,
+                          cover_enabled: subtitleCoverEnabled,
+                          cover_x: coverCoords.x,
+                          cover_y: coverCoords.y,
+                          cover_w: coverCoords.w,
+                          cover_h: coverCoords.h,
+                          cover_color: subtitleCoverColor,
+                          cover_opacity: subtitleCoverOpacity / 100,
+                          video_scale: videoScale / 100,
+                        };
+                      }
+
+                      if ('showSaveFilePicker' in window) {
+                        try {
+                          const fh = await (window as any).showSaveFilePicker({ suggestedName: filename, types: [{ description: 'MP4', accept: { 'video/mp4': ['.mp4'] } }] });
+                          alert(isLocal ? '영상을 편집 중입니다. 완료되면 자동 저장됩니다.' : '영상을 다운로드 및 편집 중입니다. 완료되면 자동 저장됩니다 (수십 초~수분 소요).');
+                          const res = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                          if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
+                          const w = await fh.createWritable(); await res.body!.pipeTo(w); alert('편집 완료!');
+                        } catch (e: any) { if (e?.name !== 'AbortError') alert(`편집 실패: ${e.message}`); }
+                      } else {
+                        try {
+                          alert(isLocal ? '영상을 편집 중입니다.' : '영상을 다운로드 및 편집 중입니다 (수십 초~수분 소요).');
+                          const res = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                          if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
+                          const blob = await res.blob();
+                          const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click();
+                          setTimeout(() => URL.revokeObjectURL(a.href), 100);
+                        } catch (e: any) { alert(`실패: ${e.message}`); }
+                      }
+                    }}
+                  >
+                    <svg style={{ width: 12, height: 12 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    편집 다운로드
+                  </button>
+                )}
+                </>)}
+
                 {/* ── 툴바 팔레트 메뉴 ── */}
                 <div ref={toolbarMenuRef} style={{ position: 'relative', marginLeft: 'auto', flexShrink: 0 }}>
                   <button
@@ -4533,7 +5262,17 @@ function App() {
                         exit={{ opacity: 0, y: -6, scale: 0.97 }}
                         transition={{ duration: 0.15 }}
                         className="floating-panel"
-                        style={{ minWidth: 220, right: 0, left: 'auto' }}
+                        style={{
+                          minWidth: 220, right: 0, left: 'auto',
+                          ...(() => {
+                            const el = toolbarMenuRef.current;
+                            if (!el) return {};
+                            const r = el.getBoundingClientRect();
+                            const spaceBelow = window.innerHeight - r.bottom;
+                            if (spaceBelow < 250) return { top: 'auto', bottom: 'calc(100% + 6px)' };
+                            return {};
+                          })(),
+                        }}
                       >
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
                           <span style={{ fontSize: '0.72rem', fontWeight: 700, color: 'var(--text-secondary)' }}>도구 표시</span>
@@ -4714,6 +5453,7 @@ function App() {
                   </div>
                 )}
               </div>
+              </div>
 
             </motion.div>
           )}
@@ -4836,20 +5576,69 @@ function App() {
                   <button className="btn-icon" style={{ width: '100%', justifyContent: 'center', gap: '0.4rem', padding: '0.5rem' }}
                     title={`${formatTimestamp(loopSegment.start)} ~ ${formatTimestamp(loopSegment.end)} MP4 다운로드`}
                     onClick={async () => {
-                      const filename = `clip_${videoId}_${Math.floor(loopSegment.start)}s-${Math.floor(loopSegment.end)}s.mp4`;
-                      const clipBody = { url: `https://www.youtube.com/watch?v=${videoId}`, start: loopSegment.start, end: loopSegment.end, quality: clipQuality };
+                      const isLocal = !!localMediaUrl;
+                      const filename = isLocal
+                        ? `edited_${localFileName || 'clip'}.mp4`
+                        : `clip_${videoId}_${Math.floor(loopSegment.start)}s-${Math.floor(loopSegment.end)}s.mp4`;
+                      
+                      let apiUrl: string;
+                      let clipBody: Record<string, any>;
+                      
+                      if (isLocal) {
+                        // 로컬 영상 → /clip-local (출력 해상도 + 자막가리기 적용)
+                        const mediaPath = new URL(localMediaUrl).pathname;
+                        apiUrl = 'http://localhost:8000/clip-local';
+                        // 좌표 변환: 컨테이너 % → 실제 영상 %
+                        const vw = localVideoRef.current?.videoWidth || 1920;
+                        const vh = localVideoRef.current?.videoHeight || 1080;
+                        const cEl = localVideoRef.current?.closest('.video-section') as HTMLElement | null;
+                        const adjCrop2 = containerToVideoCoords(cropRect, cEl, vw, vh);
+                        const adjCover2 = containerToVideoCoords(subtitleCoverRect, cEl, vw, vh);
+                        // 출력 크기: outputSize가 있으면 사용, 없으면 크롭 영역에서 계산
+                        let outW = outputSize.w;
+                        let outH = outputSize.h;
+                        if (outW === 0 && outH === 0 && showCropOverlay) {
+                          outW = Math.round(vw * adjCrop2.w / 100);
+                          outH = Math.round(vh * adjCrop2.h / 100);
+                          outW = outW - (outW % 2);
+                          outH = outH - (outH % 2);
+                        }
+                        clipBody = {
+                          media_path: mediaPath,
+                          start: loopSegment.start,
+                          end: loopSegment.end,
+                          output_w: outW,
+                          output_h: outH,
+                          crop_x: showCropOverlay ? adjCrop2.x : 0,
+                          crop_y: showCropOverlay ? adjCrop2.y : 0,
+                          crop_w: showCropOverlay ? adjCrop2.w : 100,
+                          crop_h: showCropOverlay ? adjCrop2.h : 100,
+                          cover_enabled: subtitleCoverEnabled,
+                          cover_x: adjCover2.x,
+                          cover_y: adjCover2.y,
+                          cover_w: adjCover2.w,
+                          cover_h: adjCover2.h,
+                          cover_color: subtitleCoverColor,
+                          cover_opacity: subtitleCoverOpacity / 100,
+                        };
+                      } else {
+                        // YouTube → /clip
+                        apiUrl = 'http://localhost:8000/clip';
+                        clipBody = { url: `https://www.youtube.com/watch?v=${videoId}`, start: loopSegment.start, end: loopSegment.end, quality: clipQuality };
+                      }
+
                       if ('showSaveFilePicker' in window) {
                         try {
                           const fh = await (window as any).showSaveFilePicker({ suggestedName: filename, types: [{ description: 'MP4', accept: { 'video/mp4': ['.mp4'] } }] });
                           alert('클립을 준비 중입니다. 완료되면 자동으로 저장됩니다 (수십 초 소요).');
-                          const res = await fetch('http://localhost:8000/clip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clipBody) });
+                          const res = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clipBody) });
                           if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
                           const w = await fh.createWritable(); await res.body!.pipeTo(w); alert('클립 저장 완료!');
                         } catch (e: any) { if (e?.name !== 'AbortError') alert(`클립 다운로드 실패: ${e.message}`); }
                       } else {
                         try {
                           alert('클립을 준비 중입니다.');
-                          const res = await fetch('http://localhost:8000/clip', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clipBody) });
+                          const res = await fetch(apiUrl, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clipBody) });
                           if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.detail || `오류 ${res.status}`); }
                           const blob = await res.blob();
                           const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click();

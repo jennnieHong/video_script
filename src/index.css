@@ -283,7 +283,7 @@ body.is-resizing video {
 .right-panel {
   display: flex;
   flex-direction: column;
-  overflow: hidden;     /* 자식 transcript-scroll 만 스크롤되도록 잠금 */
+  overflow: hidden;
   height: 100%;
   background: var(--bg);
 }
@@ -2409,7 +2409,7 @@ input.seg-edit-text:focus {
 /* ─── Floating Resize Handles ────────────────────────────── */
 .floating-resize {
   position: absolute;
-  z-index: 10;
+  z-index: 60;
 }
 
 .floating-resize-e {
@@ -3098,4 +3098,96 @@ input.seg-edit-text:focus {
   color: var(--text-muted);
   opacity: 0.4;
   font-style: italic;
+}
+
+/* ─── 영상 크롭 오버레이 ─────────────────────────────────────── */
+.video-section.crop-mode {
+  background: #000;
+  border-radius: 0.5rem;
+}
+
+.crop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 50;
+  cursor: crosshair;
+}
+
+.crop-mask {
+  position: absolute;
+  background: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+.crop-mask-top { left: 0; right: 0; top: 0; }
+.crop-mask-bottom { left: 0; right: 0; }
+.crop-mask-left { left: 0; }
+.crop-mask-right { right: 0; }
+
+.crop-selection {
+  position: absolute;
+  border: 2px dashed rgba(59, 130, 246, 0.85);
+  box-shadow: 0 0 0 9999px transparent;
+  cursor: move;
+  z-index: 2;
+}
+
+.crop-selection::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  pointer-events: none;
+}
+
+.crop-info {
+  position: absolute;
+  bottom: -24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 0.65rem;
+  font-family: 'JetBrains Mono', monospace;
+  padding: 2px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+/* 크롭 리사이즈 핸들 */
+.crop-handle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: #fff;
+  border: 1.5px solid rgba(59, 130, 246, 0.9);
+  border-radius: 1px;
+  z-index: 5;
+  transition: transform 0.1s;
+}
+.crop-handle:hover { transform: scale(1.4); }
+
+.crop-handle-nw { top: -4px; left: -4px; cursor: nw-resize; }
+.crop-handle-n  { top: -4px; left: 50%; margin-left: -4px; cursor: n-resize; }
+.crop-handle-ne { top: -4px; right: -4px; cursor: ne-resize; }
+.crop-handle-w  { top: 50%; margin-top: -4px; left: -4px; cursor: w-resize; }
+.crop-handle-e  { top: 50%; margin-top: -4px; right: -4px; cursor: e-resize; }
+.crop-handle-sw { bottom: -4px; left: -4px; cursor: sw-resize; }
+.crop-handle-s  { bottom: -4px; left: 50%; margin-left: -4px; cursor: s-resize; }
+.crop-handle-se { bottom: -4px; right: -4px; cursor: se-resize; }
+
+/* 자막 가리기 */
+.subtitle-cover-overlay {
+  position: absolute;
+  z-index: 55;
+  border-radius: 4px;
+  cursor: move;
+  border: 1px dashed rgba(255, 255, 255, 0.3);
+}
+
+/* 작은 프리셋 버튼 */
+.btn-icon-sm {
+  font-size: 0.65rem !important;
+  padding: 0.15rem 0.3rem !important;
+  min-width: unset !important;
 }

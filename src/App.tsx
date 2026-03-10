@@ -1020,6 +1020,9 @@ function App() {
   const [videoPan, setVideoPan] = useState({ x: 0, y: 0 }); // 드래그 오프셋
   const [subtitleCoverEnabled, setSubtitleCoverEnabled] = useState(false);
   const [subtitleCoverColor, setSubtitleCoverColor] = useState('#000000');
+  const [subtitleCoverMode, setSubtitleCoverMode] = useState<'color' | 'mosaic'>('color');
+  const [subtitleCoverBlur, setSubtitleCoverBlur] = useState(12); // 블러/픽셀 강도 1~30
+  const [subtitleCoverMosaicStyle, setSubtitleCoverMosaicStyle] = useState<'blur' | 'pixel'>('blur');
   const [subtitleCoverOpacity, setSubtitleCoverOpacity] = useState(92); // 0~100%
   const [subtitleCoverRect, setSubtitleCoverRect] = useState({ x: 5, y: 83, w: 90, h: 12 }); // % 기준
 
@@ -4014,8 +4017,16 @@ function App() {
                       <div
                         className="subtitle-cover-overlay"
                         style={{
-                          backgroundColor: subtitleCoverColor,
-                          opacity: subtitleCoverOpacity / 100,
+                          ...(subtitleCoverMode === 'color' ? {
+                            backgroundColor: subtitleCoverColor,
+                            opacity: subtitleCoverOpacity / 100,
+                          } : {
+                            backdropFilter: `blur(${subtitleCoverBlur}px)`,
+                            WebkitBackdropFilter: `blur(${subtitleCoverBlur}px)`,
+                            backgroundColor: subtitleCoverMosaicStyle === 'pixel'
+                              ? `rgba(128,128,128,${0.05 + subtitleCoverBlur * 0.01})`
+                              : 'rgba(128,128,128,0.08)',
+                          }),
                           left: `${subtitleCoverRect.x}%`, top: `${subtitleCoverRect.y}%`,
                           width: `${subtitleCoverRect.w}%`, height: `${subtitleCoverRect.h}%`,
                         }}
@@ -4217,8 +4228,16 @@ function App() {
                       <div
                         className="subtitle-cover-overlay"
                         style={{
-                          backgroundColor: subtitleCoverColor,
-                          opacity: subtitleCoverOpacity / 100,
+                          ...(subtitleCoverMode === 'color' ? {
+                            backgroundColor: subtitleCoverColor,
+                            opacity: subtitleCoverOpacity / 100,
+                          } : {
+                            backdropFilter: `blur(${subtitleCoverBlur}px)`,
+                            WebkitBackdropFilter: `blur(${subtitleCoverBlur}px)`,
+                            backgroundColor: subtitleCoverMosaicStyle === 'pixel'
+                              ? `rgba(128,128,128,${0.05 + subtitleCoverBlur * 0.01})`
+                              : 'rgba(128,128,128,0.08)',
+                          }),
                           left: `${subtitleCoverRect.x}%`,
                           top: `${subtitleCoverRect.y}%`,
                           width: `${subtitleCoverRect.w}%`,
@@ -5087,8 +5106,24 @@ function App() {
                   </svg>
                   자막가리기
                 </button>
-                {subtitleCoverEnabled && (
-                  <>
+                {subtitleCoverEnabled && (<>
+                  {/* 모드 선택 토글 */}
+                  <span style={{ display: 'inline-flex', borderRadius: 6, overflow: 'hidden', border: '1px solid var(--border-subtle)' }}>
+                    <button
+                      className={`btn-icon`}
+                      style={{ borderRadius: 0, fontSize: '0.6rem', padding: '0.15rem 0.4rem', background: subtitleCoverMode === 'color' ? 'var(--primary)' : 'transparent', color: subtitleCoverMode === 'color' ? '#fff' : 'var(--text-muted)' }}
+                      onClick={() => setSubtitleCoverMode('color')}
+                      title="컬러 블록"
+                    >컬러</button>
+                    <button
+                      className={`btn-icon`}
+                      style={{ borderRadius: 0, fontSize: '0.6rem', padding: '0.15rem 0.4rem', background: subtitleCoverMode === 'mosaic' ? 'var(--primary)' : 'transparent', color: subtitleCoverMode === 'mosaic' ? '#fff' : 'var(--text-muted)' }}
+                      onClick={() => setSubtitleCoverMode('mosaic')}
+                      title="모자이크 블러"
+                    >모자이크</button>
+                  </span>
+                  {/* 컬러 모드 전용 컨트롤 */}
+                  {subtitleCoverMode === 'color' && (<>
                   <input
                     type="color"
                     value={subtitleCoverColor}
@@ -5107,7 +5142,34 @@ function App() {
                     />
                     {subtitleCoverOpacity}%
                   </span>
-                  </>
+                  </>)}
+                  {/* 모자이크 모드 전용 컨트롤 */}
+                  {subtitleCoverMode === 'mosaic' && (<>
+                    <span style={{ display: 'inline-flex', borderRadius: 4, overflow: 'hidden', border: '1px solid var(--border-subtle)' }}>
+                      <button
+                        className="btn-icon"
+                        style={{ borderRadius: 0, fontSize: '0.55rem', padding: '0.1rem 0.3rem', background: subtitleCoverMosaicStyle === 'blur' ? 'var(--primary)' : 'transparent', color: subtitleCoverMosaicStyle === 'blur' ? '#fff' : 'var(--text-muted)' }}
+                        onClick={() => setSubtitleCoverMosaicStyle('blur')}
+                      >블러</button>
+                      <button
+                        className="btn-icon"
+                        style={{ borderRadius: 0, fontSize: '0.55rem', padding: '0.1rem 0.3rem', background: subtitleCoverMosaicStyle === 'pixel' ? 'var(--primary)' : 'transparent', color: subtitleCoverMosaicStyle === 'pixel' ? '#fff' : 'var(--text-muted)' }}
+                        onClick={() => setSubtitleCoverMosaicStyle('pixel')}
+                      >픽셀</button>
+                    </span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: '0.65rem', color: 'rgba(255,255,255,0.6)' }}>
+                      <input
+                        type="range"
+                        min={1} max={30} step={1}
+                        value={subtitleCoverBlur}
+                        onChange={(e) => setSubtitleCoverBlur(Number(e.target.value))}
+                        title={`강도 ${subtitleCoverBlur}`}
+                        style={{ width: 50, height: 3, cursor: 'pointer', accentColor: '#7c3aed' }}
+                      />
+                      {subtitleCoverBlur}
+                    </span>
+                  </>)}
+                </>
                 )}
                 {/* 편집 다운로드 버튼 (프레임/자막가리기/비율 활성 시) */}
                 {(showCropOverlay || subtitleCoverEnabled || (outputSize.w > 0 && outputSize.h > 0)) && (
@@ -5181,6 +5243,9 @@ function App() {
                           cover_w: coverCoords.w,
                           cover_h: coverCoords.h,
                           cover_color: subtitleCoverColor,
+                          cover_mode: subtitleCoverMode,
+                          cover_blur: subtitleCoverBlur,
+                          cover_mosaic_style: subtitleCoverMosaicStyle,
                           cover_opacity: subtitleCoverOpacity / 100,
                           video_scale: videoScale / 100,
                           cover_is_canvas_pct: isCanvasMode,
@@ -5205,6 +5270,9 @@ function App() {
                           cover_w: coverCoords.w,
                           cover_h: coverCoords.h,
                           cover_color: subtitleCoverColor,
+                          cover_mode: subtitleCoverMode,
+                          cover_blur: subtitleCoverBlur,
+                          cover_mosaic_style: subtitleCoverMosaicStyle,
                           cover_opacity: subtitleCoverOpacity / 100,
                           video_scale: videoScale / 100,
                         };
@@ -5619,6 +5687,9 @@ function App() {
                           cover_w: adjCover2.w,
                           cover_h: adjCover2.h,
                           cover_color: subtitleCoverColor,
+                          cover_mode: subtitleCoverMode,
+                          cover_blur: subtitleCoverBlur,
+                          cover_mosaic_style: subtitleCoverMosaicStyle,
                           cover_opacity: subtitleCoverOpacity / 100,
                         };
                       } else {

@@ -619,6 +619,9 @@ class ClipEditRequest(BaseModel):
     cover_h: float = 12
     cover_color: str = "#000000"
     cover_opacity: float = 0.92
+    cover_mode: str = "color"  # 'color' | 'mosaic'
+    cover_blur: int = 12       # blur/pixel strength (1-30)
+    cover_mosaic_style: str = "blur"  # 'blur' | 'pixel'
 
 @app.post("/clip-edit")
 async def clip_edit(request: ClipEditRequest, background_tasks: BackgroundTasks):
@@ -739,11 +742,21 @@ async def clip_edit(request: ClipEditRequest, background_tasks: BackgroundTasks)
             by = max(0, min(by, out_h - 1))
             bw = max(1, min(bw, out_w - bx))
             bh = max(1, min(bh, out_h - by))
-            color_hex = request.cover_color.lstrip("#")
-            opacity = round(request.cover_opacity, 2)
-            color_str = f"0x{color_hex}@{opacity}"
-            vf_filters.append(f"drawbox=x={bx}:y={by}:w={bw}:h={bh}:color={color_str}:t=fill")
-            logger.info(f"🟫 자막가리기: {bw}x{bh}+{bx}+{by} color={color_str}")
+            if request.cover_mode == 'mosaic':
+                blur_val = max(1, min(30, request.cover_blur))
+                if request.cover_mosaic_style == 'pixel':
+                    factor = max(2, blur_val)
+                    mosaic_vf = f"crop={bw}:{bh}:{bx}:{by},scale=iw/{factor}:ih/{factor},scale={bw}:{bh}:flags=neighbor"
+                else:
+                    mosaic_vf = f"crop={bw}:{bh}:{bx}:{by},avgblur=sizeX={blur_val}:sizeY={blur_val}"
+                vf_filters.append(f"__MOSAIC__|{mosaic_vf}|{bx}|{by}")
+                logger.info(f"🔲 모자이크({request.cover_mosaic_style}) 가리기: {bw}x{bh}+{bx}+{by} 강도={blur_val}")
+            else:
+                color_hex = request.cover_color.lstrip("#")
+                opacity = round(request.cover_opacity, 2)
+                color_str = f"0x{color_hex}@{opacity}"
+                vf_filters.append(f"drawbox=x={bx}:y={by}:w={bw}:h={bh}:color={color_str}:t=fill")
+                logger.info(f"🟫 자막가리기: {bw}x{bh}+{bx}+{by} color={color_str}")
 
         # ── 4단계: ffmpeg 실행 ────────────────────────────────────
         cmd = [ffmpeg_exe, "-y"]
@@ -753,21 +766,62 @@ async def clip_edit(request: ClipEditRequest, background_tasks: BackgroundTasks)
         if request.end > 0 and request.end > request.start:
             cmd += ["-t", str(request.end - request.start)]
 
-        if vf_filters:
-            cmd += ["-vf", ",".join(vf_filters)]
-            cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "fast"]
-        else:
-            cmd += ["-c:v", "copy"]
-
-        cmd += ["-c:a", "aac", "-avoid_negative_ts", "make_zero", clip_path]
-
-        logger.info(f"🎬 YouTube 편집 시작: {' '.join(cmd)}")
         duration = (request.end - request.start) if request.end > request.start else 600
         timeout = max(300, int(duration) + 120)
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        if result.returncode != 0:
-            logger.error(f"ffmpeg stderr: {result.stderr[-500:]}")
-            raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+
+        has_mosaic = any(f.startswith('__MOSAIC__|') for f in vf_filters)
+        if vf_filters:
+            if has_mosaic:
+                pre_filters = [f for f in vf_filters if not f.startswith('__MOSAIC__|')]
+                mosaic_entry = [f for f in vf_filters if f.startswith('__MOSAIC__|')][0]
+                parts = mosaic_entry.split('|', 3)
+                mosaic_vf = parts[1]
+                m_bx = parts[2]
+                m_by = parts[3]
+                # 2단계 처리: 1) pre_filters → 중간 파일  2) mosaic → 최종 파일
+                if pre_filters:
+                    mid_path = clip_path.replace('.mp4', '_mid.mp4')
+                    cmd1 = cmd + ["-vf", ",".join(pre_filters), "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-c:a", "aac", "-avoid_negative_ts", "make_zero", mid_path]
+                    logger.info(f"🎬 1단계(pre): {' '.join(cmd1)}")
+                    r1 = subprocess.run(cmd1, capture_output=True, text=True, timeout=timeout)
+                    if r1.returncode != 0:
+                        raise RuntimeError(f"ffmpeg pre-filter 오류: {r1.stderr[-300:]}")
+                    mosaic_fc = f"[0:v]split=2[a][b];[b]{mosaic_vf}[blr];[a][blr]overlay={m_bx}:{m_by}[vout]"
+                    cmd2 = [ffmpeg_exe, "-y", "-i", mid_path, "-filter_complex", mosaic_fc, "-map", "[vout]", "-map", "0:a?", "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-c:a", "aac", clip_path]
+                    logger.info(f"🎬 2단계(mosaic): {' '.join(cmd2)}")
+                    r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=timeout)
+                    if r2.returncode != 0:
+                        logger.error(f"ffmpeg mosaic stderr: {r2.stderr}")
+                        raise RuntimeError(f"ffmpeg mosaic 오류: {r2.stderr[-300:]}")
+                    # 중간 파일 삭제
+                    try: os.remove(mid_path)
+                    except: pass
+                else:
+                    mosaic_fc = f"[0:v]split=2[a][b];[b]{mosaic_vf}[blr];[a][blr]overlay={m_bx}:{m_by}[vout]"
+                    cmd += ["-filter_complex", mosaic_fc, "-map", "[vout]", "-map", "0:a?", "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-c:a", "aac", "-avoid_negative_ts", "make_zero", clip_path]
+                    logger.info(f"🎬 편집 시작(mosaic): {' '.join(cmd)}")
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                    if result.returncode != 0:
+                        logger.error(f"ffmpeg stderr: {result.stderr}")
+                        raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+            else:
+                cmd += ["-vf", ",".join(vf_filters), "-c:v", "libx264", "-crf", "18", "-preset", "fast"]
+                cmd += ["-c:a", "aac", "-avoid_negative_ts", "make_zero", clip_path]
+                logger.info(f"🎬 YouTube 편집 시작: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                if result.returncode != 0:
+                    logger.error(f"ffmpeg stderr: {result.stderr[-500:]}")
+                    raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+        else:
+            cmd += ["-c:v", "copy", "-c:a", "aac", "-avoid_negative_ts", "make_zero", clip_path]
+            logger.info(f"🎬 YouTube 편집 시작: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            if result.returncode != 0:
+                logger.error(f"ffmpeg stderr: {result.stderr[-500:]}")
+                raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+
+
+
 
         if not os.path.exists(clip_path) or os.path.getsize(clip_path) == 0:
             raise FileNotFoundError("편집된 클립 파일이 생성되지 않았습니다.")
@@ -814,6 +868,9 @@ class LocalClipRequest(BaseModel):
     cover_h: float = 12
     cover_color: str = "#000000"
     cover_opacity: float = 0.92
+    cover_mode: str = "color"  # 'color' | 'mosaic'
+    cover_blur: int = 12
+    cover_mosaic_style: str = "blur"  # 'blur' | 'pixel'
     video_scale: float = 1.0     # 영상 축소 비율 (0.1~2.0+)
     cover_is_canvas_pct: bool = False  # True면 cover 좌표를 출력 캔버스 % 그대로 사용
     pan_x: float = 0.0  # 드래그 오프셋 X (캔버스 %, 0=중앙)
@@ -1000,11 +1057,21 @@ async def clip_local(request: LocalClipRequest, background_tasks: BackgroundTask
             bw = max(1, min(bw, out_w - bx))
             bh = max(1, min(bh, out_h - by))
 
-            color_hex = request.cover_color.lstrip("#")
-            opacity = round(request.cover_opacity, 2)
-            color_str = f"0x{color_hex}@{opacity}"
-            vf_filters.append(f"drawbox=x={bx}:y={by}:w={bw}:h={bh}:color={color_str}:t=fill")
-            logger.info(f"🟫 자막가리기: {bw}x{bh}+{bx}+{by} color={color_str}")
+            if request.cover_mode == 'mosaic':
+                blur_val = max(1, min(30, request.cover_blur))
+                if request.cover_mosaic_style == 'pixel':
+                    factor = max(2, blur_val)
+                    mosaic_vf = f"crop={bw}:{bh}:{bx}:{by},scale=iw/{factor}:ih/{factor},scale={bw}:{bh}:flags=neighbor"
+                else:
+                    mosaic_vf = f"crop={bw}:{bh}:{bx}:{by},avgblur=sizeX={blur_val}:sizeY={blur_val}"
+                vf_filters.append(f"__MOSAIC__|{mosaic_vf}|{bx}|{by}")
+                logger.info(f"🔲 모자이크({request.cover_mosaic_style}) 가리기: {bw}x{bh}+{bx}+{by} 강도={blur_val}")
+            else:
+                color_hex = request.cover_color.lstrip("#")
+                opacity = round(request.cover_opacity, 2)
+                color_str = f"0x{color_hex}@{opacity}"
+                vf_filters.append(f"drawbox=x={bx}:y={by}:w={bw}:h={bh}:color={color_str}:t=fill")
+                logger.info(f"🟫 자막가리기: {bw}x{bh}+{bx}+{by} color={color_str}")
 
         # 시작/끝 시간 계산
         cmd = [ffmpeg_exe, "-y"]
@@ -1014,21 +1081,60 @@ async def clip_local(request: LocalClipRequest, background_tasks: BackgroundTask
         if request.end > 0 and request.end > request.start:
             cmd += ["-t", str(request.end - request.start)]
 
-        if vf_filters:
-            cmd += ["-vf", ",".join(vf_filters)]
-            cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "fast"]
-        else:
-            cmd += ["-c:v", "copy"]
-
-        cmd += ["-c:a", "aac", "-avoid_negative_ts", "make_zero", clip_path]
-
-        logger.info(f"🎬 로컬 편집 시작: {' '.join(cmd)}")
         duration = (request.end - request.start) if request.end > request.start else 600
         timeout = max(120, int(duration) + 60)
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        if result.returncode != 0:
-            logger.error(f"ffmpeg stderr: {result.stderr[-500:]}")
-            raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+
+        has_mosaic = any(f.startswith('__MOSAIC__|') for f in vf_filters)
+        if vf_filters:
+            if has_mosaic:
+                pre_filters = [f for f in vf_filters if not f.startswith('__MOSAIC__|')]
+                mosaic_entry = [f for f in vf_filters if f.startswith('__MOSAIC__|')][0]
+                parts = mosaic_entry.split('|', 3)
+                mosaic_vf = parts[1]
+                m_bx = parts[2]
+                m_by = parts[3]
+                if pre_filters:
+                    mid_path = clip_path.replace('.mp4', '_mid.mp4')
+                    cmd1 = cmd + ["-vf", ",".join(pre_filters), "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-c:a", "aac", "-avoid_negative_ts", "make_zero", mid_path]
+                    logger.info(f"🎬 1단계(pre): {' '.join(cmd1)}")
+                    r1 = subprocess.run(cmd1, capture_output=True, text=True, timeout=timeout)
+                    if r1.returncode != 0:
+                        raise RuntimeError(f"ffmpeg pre-filter 오류: {r1.stderr[-300:]}")
+                    mosaic_fc = f"[0:v]split=2[a][b];[b]{mosaic_vf}[blr];[a][blr]overlay={m_bx}:{m_by}[vout]"
+                    cmd2 = [ffmpeg_exe, "-y", "-i", mid_path, "-filter_complex", mosaic_fc, "-map", "[vout]", "-map", "0:a?", "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-c:a", "aac", clip_path]
+                    logger.info(f"🎬 2단계(mosaic): {' '.join(cmd2)}")
+                    r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=timeout)
+                    if r2.returncode != 0:
+                        logger.error(f"ffmpeg mosaic stderr: {r2.stderr}")
+                        raise RuntimeError(f"ffmpeg mosaic 오류: {r2.stderr[-300:]}")
+                    try: os.remove(mid_path)
+                    except: pass
+                else:
+                    mosaic_fc = f"[0:v]split=2[a][b];[b]{mosaic_vf}[blr];[a][blr]overlay={m_bx}:{m_by}[vout]"
+                    cmd += ["-filter_complex", mosaic_fc, "-map", "[vout]", "-map", "0:a?", "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-c:a", "aac", "-avoid_negative_ts", "make_zero", clip_path]
+                    logger.info(f"🎬 편집 시작(mosaic): {' '.join(cmd)}")
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                    if result.returncode != 0:
+                        logger.error(f"ffmpeg stderr: {result.stderr}")
+                        raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+            else:
+                cmd += ["-vf", ",".join(vf_filters), "-c:v", "libx264", "-crf", "18", "-preset", "fast"]
+                cmd += ["-c:a", "aac", "-avoid_negative_ts", "make_zero", clip_path]
+                logger.info(f"🎬 로컬 편집 시작: {' '.join(cmd)}")
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+                if result.returncode != 0:
+                    logger.error(f"ffmpeg stderr: {result.stderr[-500:]}")
+                    raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+        else:
+            cmd += ["-c:v", "copy", "-c:a", "aac", "-avoid_negative_ts", "make_zero", clip_path]
+            logger.info(f"🎬 로컬 편집 시작: {' '.join(cmd)}")
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+            if result.returncode != 0:
+                logger.error(f"ffmpeg stderr: {result.stderr[-500:]}")
+                raise RuntimeError(f"ffmpeg 오류: {result.stderr[-300:]}")
+
+
+
 
         if not os.path.exists(clip_path) or os.path.getsize(clip_path) == 0:
             raise FileNotFoundError("편집된 클립 파일이 생성되지 않았습니다.")

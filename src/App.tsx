@@ -1025,6 +1025,7 @@ function App() {
   const [subtitleCoverMosaicStyle, setSubtitleCoverMosaicStyle] = useState<'blur' | 'pixel'>('blur');
   const [subtitleCoverOpacity, setSubtitleCoverOpacity] = useState(92); // 0~100%
   const [subtitleCoverRect, setSubtitleCoverRect] = useState({ x: 5, y: 83, w: 90, h: 12 }); // % 기준
+  const [faceBlurLoading, setFaceBlurLoading] = useState(false);
 
   /**
    * 컨테이너 % 좌표를 실제 영상 콘텐츠 % 좌표로 변환
@@ -5170,6 +5171,87 @@ function App() {
                     </span>
                   </>)}
                 </>
+                )}
+                {/* 얼굴 자동감지 블러 버튼 (로컬 영상만) */}
+                {localMediaUrl && (
+                  <button
+                    className="btn-icon"
+                    disabled={faceBlurLoading}
+                    style={{ background: 'rgba(59,130,246,0.15)', borderColor: 'rgba(59,130,246,0.4)', color: faceBlurLoading ? '#94a3b8' : '#60a5fa', gap: '0.3rem', fontSize: '0.6rem', opacity: faceBlurLoading ? 0.6 : 1 }}
+                    title="영상 내 얼굴을 자동 감지하여 블러 처리"
+                    onClick={async () => {
+                      if (faceBlurLoading) return;
+                      setFaceBlurLoading(true);
+                      try {
+                        const defaultName = `${localFileName || 'video'}_face_blur.mp4`;
+                        // 1) 먼저 저장 위치 선택
+                        let fileHandle: any = null;
+                        if ('showSaveFilePicker' in window) {
+                          try {
+                            fileHandle = await (window as any).showSaveFilePicker({
+                              suggestedName: defaultName,
+                              types: [{ description: 'MP4 Video', accept: { 'video/mp4': ['.mp4'] } }],
+                            });
+                          } catch (pickErr: any) {
+                            if (pickErr.name === 'AbortError') { setFaceBlurLoading(false); return; }
+                            throw pickErr;
+                          }
+                        }
+                        // 2) 서버에 얼굴 블러 요청
+                        const start = loopSegment ? loopSegment.start : 0;
+                        const end = loopSegment ? loopSegment.end : 0;
+                        const mediaPath = new URL(localMediaUrl).pathname;
+                        const resp = await fetch('http://localhost:8000/blur-faces', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            media_path: mediaPath,
+                            start, end,
+                            blur_strength: subtitleCoverBlur,
+                            confidence: 0.5,
+                            detection_model: 1,
+                            margin: 0.3,
+                          }),
+                        });
+                        if (!resp.ok) {
+                          const err = await resp.json();
+                          throw new Error(err.detail || '얼굴 블러 실패');
+                        }
+                        const blob = await resp.blob();
+                        // 3) 저장
+                        if (fileHandle) {
+                          const writable = await fileHandle.createWritable();
+                          await writable.write(blob);
+                          await writable.close();
+                          alert(`✅ 얼굴 블러 완료!\n저장: ${fileHandle.name}`);
+                        } else {
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement('a');
+                          a.href = url;
+                          a.download = defaultName;
+                          document.body.appendChild(a);
+                          a.click();
+                          document.body.removeChild(a);
+                          URL.revokeObjectURL(url);
+                          alert(`✅ 얼굴 블러 완료!\n다운로드: ${defaultName}`);
+                        }
+                      } catch (e: any) {
+                        alert(`얼굴 블러 실패: ${e.message}`);
+                      } finally {
+                        setFaceBlurLoading(false);
+                      }
+                    }}
+                  >
+                    {faceBlurLoading ? (
+                      <span style={{ display: 'inline-block', width: 14, height: 14, border: '2px solid #60a5fa', borderTop: '2px solid transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+                    ) : (
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="8" r="5"/>
+                        <path d="M3 21v-2a7 7 0 0 1 7-7h4a7 7 0 0 1 7 7v2"/>
+                      </svg>
+                    )}
+                    {faceBlurLoading ? '처리중...' : '얼굴블러'}
+                  </button>
                 )}
                 {/* 편집 다운로드 버튼 (프레임/자막가리기/비율 활성 시) */}
                 {(showCropOverlay || subtitleCoverEnabled || (outputSize.w > 0 && outputSize.h > 0)) && (

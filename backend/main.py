@@ -18,6 +18,14 @@ import json
 import threading
 import asyncio
 import subprocess
+import time
+import shutil
+try:
+    import cv2
+    import mediapipe as mp
+except ImportError:
+    cv2 = None
+    mp = None
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -1422,6 +1430,155 @@ async def upload_media(file: UploadFile = File(...)):
         "file_id": file_id,
         "filename": file.filename,
     }
+
+# ─── 얼굴 자동감지 블러 ─────────────────────────────────────────────
+class BlurFacesRequest(BaseModel):
+    media_path: str  # /uploads/xxx.mp4
+    start: float = 0
+    end: float = 0
+    blur_strength: int = 15  # 1-30
+    confidence: float = 0.5  # 감지 신뢰도 0.0-1.0
+    detection_model: int = 1  # 0=가까운 얼굴, 1=전체 범위
+    margin: float = 0.3  # 감지 영역 여백 (30%)
+
+@app.post("/blur-faces")
+async def blur_faces(request: BlurFacesRequest, background_tasks: BackgroundTasks):
+    """mediapipe를 사용하여 영상 내 얼굴을 자동 감지하고 블러 처리합니다."""
+    if cv2 is None or mp is None:
+        raise HTTPException(status_code=500, detail="opencv-python, mediapipe가 설치되어 있지 않습니다. pip install opencv-python mediapipe")
+
+    rel = request.media_path.lstrip("/")
+    src_path = str(BASE_DIR / rel)
+    if not os.path.exists(src_path):
+        raise HTTPException(status_code=400, detail=f"파일을 찾을 수 없습니다: {request.media_path}")
+
+    temp_dir = tempfile.mkdtemp()
+    video_only_path = os.path.join(temp_dir, "video_blurred.mp4")
+    final_path = os.path.join(temp_dir, "face_blurred.mp4")
+
+    try:
+        cap = cv2.VideoCapture(src_path)
+        if not cap.isOpened():
+            raise RuntimeError("영상 파일을 열 수 없습니다.")
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        start_frame = int(request.start * fps) if request.start > 0 else 0
+        end_frame = int(request.end * fps) if request.end > 0 else total_frames
+
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(video_only_path, fourcc, fps, (w, h))
+
+        # mediapipe 얼굴 감지 (Tasks API)
+        from mediapipe.tasks.python import vision as mp_vision, BaseOptions as MpBaseOptions
+        model_path = str(BASE_DIR / "blaze_face_short_range.tflite")
+        if not os.path.exists(model_path):
+            # 모델 자동 다운로드
+            import urllib.request
+            url = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite"
+            urllib.request.urlretrieve(url, model_path)
+            logger.info(f"🔵 모델 다운로드: {model_path}")
+
+        detector_options = mp_vision.FaceDetectorOptions(
+            base_options=MpBaseOptions(model_asset_path=model_path),
+            min_detection_confidence=request.confidence
+        )
+        face_detector = mp_vision.FaceDetector.create_from_options(detector_options)
+
+        blur_k = max(3, request.blur_strength * 6 + 1)  # 커널 크기 (홀수)
+        if blur_k % 2 == 0:
+            blur_k += 1
+        margin = request.margin
+
+        frame_idx = start_frame
+        processed = 0
+        logger.info(f"🔵 얼굴 블러 시작: {src_path} ({start_frame}-{end_frame}, {w}x{h}, {fps}fps)")
+
+        while frame_idx < end_frame:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # RGB 변환 후 감지
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            results = face_detector.detect(mp_image)
+
+            if results.detections:
+                for detection in results.detections:
+                    bb = detection.bounding_box
+                    # 픽셀 좌표 (여백 포함)
+                    mx = int(bb.width * margin)
+                    my = int(bb.height * margin)
+                    x1 = max(0, bb.origin_x - mx)
+                    y1 = max(0, bb.origin_y - my)
+                    x2 = min(w, bb.origin_x + bb.width + mx)
+                    y2 = min(h, bb.origin_y + bb.height + my)
+
+                    if x2 > x1 and y2 > y1:
+                        roi = frame[y1:y2, x1:x2]
+                        blurred = cv2.GaussianBlur(roi, (blur_k, blur_k), 0)
+                        frame[y1:y2, x1:x2] = blurred
+
+            out.write(frame)
+            frame_idx += 1
+            processed += 1
+
+        cap.release()
+        out.release()
+        face_detector.close()
+
+        logger.info(f"🔵 얼굴 블러 완료: {processed}프레임 처리")
+
+        # 오디오 결합 (FFmpeg)
+        ffmpeg_exe = FFMPEG_PATH if FFMPEG_PATH else "ffmpeg"
+        mux_cmd = [ffmpeg_exe, "-y"]
+        if request.start > 0:
+            mux_cmd += ["-ss", str(request.start)]
+        mux_cmd += ["-i", src_path]  # 원본 (오디오 소스)
+        mux_cmd += ["-i", video_only_path]  # 블러된 비디오
+        if request.end > 0 and request.end > request.start:
+            mux_cmd += ["-t", str(request.end - request.start)]
+        mux_cmd += ["-map", "1:v", "-map", "0:a?", "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-c:a", "aac", "-shortest", final_path]
+
+        logger.info(f"🔵 오디오 결합: {' '.join(mux_cmd)}")
+        mux_result = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=600)
+        if mux_result.returncode != 0:
+            logger.error(f"ffmpeg mux stderr: {mux_result.stderr[-500:]}")
+            raise RuntimeError(f"오디오 결합 실패: {mux_result.stderr[-300:]}")
+
+        if not os.path.exists(final_path) or os.path.getsize(final_path) == 0:
+            raise FileNotFoundError("블러 처리된 파일이 생성되지 않았습니다.")
+
+        def iterfile():
+            with open(final_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+
+        def cleanup():
+            import time; time.sleep(10)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        background_tasks.add_task(cleanup)
+
+        safe_name = os.path.basename(src_path).rsplit('.', 1)[0]
+        return StreamingResponse(
+            iterfile(),
+            media_type="video/mp4",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}_face_blur.mp4"'}
+        )
+
+    except Exception as e:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.error(f"얼굴 블러 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"로컬 편집에 실패했습니다: {e}")
+
 
 
 if __name__ == "__main__":

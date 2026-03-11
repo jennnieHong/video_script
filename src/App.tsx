@@ -1026,6 +1026,10 @@ function App() {
   const [subtitleCoverOpacity, setSubtitleCoverOpacity] = useState(92); // 0~100%
   const [subtitleCoverRect, setSubtitleCoverRect] = useState({ x: 5, y: 83, w: 90, h: 12 }); // % 기준
   const [faceBlurLoading, setFaceBlurLoading] = useState(false);
+  const [faceBlurSettings, setFaceBlurSettings] = useState(false); // 설정 패널 표시
+  const [faceBlurConfidence, setFaceBlurConfidence] = useState(0.3);
+  const [faceBlurCarry, setFaceBlurCarry] = useState(8);
+  const [faceBlurSmooth, setFaceBlurSmooth] = useState(0.4);
 
   /**
    * 컨테이너 % 좌표를 실제 영상 콘텐츠 % 좌표로 변환
@@ -5173,7 +5177,7 @@ function App() {
                 </>
                 )}
                 {/* 얼굴 자동감지 블러 버튼 (로컬 영상만) */}
-                {localMediaUrl && (
+                {localMediaUrl && (<>
                   <button
                     className="btn-icon"
                     disabled={faceBlurLoading}
@@ -5208,9 +5212,11 @@ function App() {
                             media_path: mediaPath,
                             start, end,
                             blur_strength: subtitleCoverBlur,
-                            confidence: 0.5,
+                            confidence: faceBlurConfidence,
                             detection_model: 1,
                             margin: 0.3,
+                            carry_frames: faceBlurCarry,
+                            smooth_alpha: faceBlurSmooth,
                           }),
                         });
                         if (!resp.ok) {
@@ -5252,7 +5258,32 @@ function App() {
                     )}
                     {faceBlurLoading ? '처리중...' : '얼굴블러'}
                   </button>
-                )}
+                  {/* 설정 토글 */}
+                  <button
+                    className="btn-icon"
+                    style={{ background: faceBlurSettings ? 'rgba(59,130,246,0.3)' : 'transparent', borderColor: 'rgba(59,130,246,0.3)', color: '#60a5fa', padding: '0.2rem 0.3rem', minWidth: 'auto' }}
+                    title="얼굴블러 설정"
+                    onClick={() => setFaceBlurSettings(v => !v)}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+                  </button>
+                  {faceBlurSettings && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', background: 'rgba(30,41,59,0.95)', border: '1px solid rgba(59,130,246,0.3)', borderRadius: '0.4rem', padding: '0.3rem 0.5rem', fontSize: '0.55rem', color: '#94a3b8' }}>
+                      <label title="얼굴 감지 신뢰도. 낮을수록 측면/부분 얼굴도 감지하지만 오탐 증가" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', whiteSpace: 'nowrap' }}>
+                        신뢰도 <input type="range" min="10" max="90" value={Math.round(faceBlurConfidence * 100)} onChange={e => setFaceBlurConfidence(Number(e.target.value) / 100)} style={{ width: 50, accentColor: '#60a5fa' }} />
+                        <span style={{ color: '#60a5fa', minWidth: 24 }}>{Math.round(faceBlurConfidence * 100)}%</span>
+                      </label>
+                      <label title="감지 누락 시 이전 위치에서 블러를 유지하는 프레임 수. 높을수록 순간 미감지를 잘 커버" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', whiteSpace: 'nowrap' }}>
+                        유지 <input type="range" min="0" max="20" value={faceBlurCarry} onChange={e => setFaceBlurCarry(Number(e.target.value))} style={{ width: 50, accentColor: '#60a5fa' }} />
+                        <span style={{ color: '#60a5fa', minWidth: 20 }}>{faceBlurCarry}f</span>
+                      </label>
+                      <label title="블러 영역의 시간적 안정성. 낮을수록 부드럽게 이동(떨림 방지), 높을수록 즉시 반영" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', whiteSpace: 'nowrap' }}>
+                        안정 <input type="range" min="10" max="100" value={Math.round(faceBlurSmooth * 100)} onChange={e => setFaceBlurSmooth(Number(e.target.value) / 100)} style={{ width: 50, accentColor: '#60a5fa' }} />
+                        <span style={{ color: '#60a5fa', minWidth: 24 }}>{Math.round(faceBlurSmooth * 100)}%</span>
+                      </label>
+                    </div>
+                  )}
+                </>)}
                 {/* 편집 다운로드 버튼 (프레임/자막가리기/비율 활성 시) */}
                 {(showCropOverlay || subtitleCoverEnabled || (outputSize.w > 0 && outputSize.h > 0)) && (
                   <button

@@ -1437,9 +1437,11 @@ class BlurFacesRequest(BaseModel):
     start: float = 0
     end: float = 0
     blur_strength: int = 15  # 1-30
-    confidence: float = 0.5  # 감지 신뢰도 0.0-1.0
+    confidence: float = 0.3  # 감지 신뢰도 0.0-1.0
     detection_model: int = 1  # 0=가까운 얼굴, 1=전체 범위
     margin: float = 0.3  # 감지 영역 여백 (30%)
+    carry_frames: int = 8  # 감지 누락 시 이전 위치 유지 프레임 수
+    smooth_alpha: float = 0.4  # 스무딩 강도 (0=부드러움, 1=즉시반영)
 
 @app.post("/blur-faces")
 async def blur_faces(request: BlurFacesRequest, background_tasks: BackgroundTasks):
@@ -1496,6 +1498,24 @@ async def blur_faces(request: BlurFacesRequest, background_tasks: BackgroundTask
             blur_k += 1
         margin = request.margin
 
+        # ── 트래킹 상태 ──
+        # tracked_faces: { id: { x1, y1, x2, y2, missed } }
+        tracked_faces: dict = {}
+        next_face_id = 0
+        SMOOTH_ALPHA = max(0.05, min(1.0, request.smooth_alpha))
+        CARRY_FRAMES = max(0, min(30, request.carry_frames))
+        IOU_THRESHOLD = 0.3  # IoU 매칭 임계값
+
+        def calc_iou(a, b):
+            """두 박스의 IoU 계산"""
+            ix1 = max(a[0], b[0]); iy1 = max(a[1], b[1])
+            ix2 = min(a[2], b[2]); iy2 = min(a[3], b[3])
+            inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+            area_a = (a[2] - a[0]) * (a[3] - a[1])
+            area_b = (b[2] - b[0]) * (b[3] - b[1])
+            union = area_a + area_b - inter
+            return inter / union if union > 0 else 0
+
         frame_idx = start_frame
         processed = 0
         logger.info(f"🔵 얼굴 블러 시작: {src_path} ({start_frame}-{end_frame}, {w}x{h}, {fps}fps)")
@@ -1510,21 +1530,75 @@ async def blur_faces(request: BlurFacesRequest, background_tasks: BackgroundTask
             mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
             results = face_detector.detect(mp_image)
 
+            # 현재 프레임 감지 박스 추출
+            cur_boxes = []
             if results.detections:
                 for detection in results.detections:
                     bb = detection.bounding_box
-                    # 픽셀 좌표 (여백 포함)
-                    mx = int(bb.width * margin)
-                    my = int(bb.height * margin)
-                    x1 = max(0, bb.origin_x - mx)
-                    y1 = max(0, bb.origin_y - my)
-                    x2 = min(w, bb.origin_x + bb.width + mx)
-                    y2 = min(h, bb.origin_y + bb.height + my)
-
+                    mx_px = int(bb.width * margin)
+                    my_px = int(bb.height * margin)
+                    x1 = max(0, bb.origin_x - mx_px)
+                    y1 = max(0, bb.origin_y - my_px)
+                    x2 = min(w, bb.origin_x + bb.width + mx_px)
+                    y2 = min(h, bb.origin_y + bb.height + my_px)
                     if x2 > x1 and y2 > y1:
-                        roi = frame[y1:y2, x1:x2]
-                        blurred = cv2.GaussianBlur(roi, (blur_k, blur_k), 0)
-                        frame[y1:y2, x1:x2] = blurred
+                        cur_boxes.append((x1, y1, x2, y2))
+
+            # IoU 기반 매칭: 기존 추적 얼굴과 현재 감지 박스 매칭
+            matched_ids = set()
+            matched_boxes = set()
+            for fid, fdata in tracked_faces.items():
+                best_iou = 0
+                best_idx = -1
+                prev = (fdata['x1'], fdata['y1'], fdata['x2'], fdata['y2'])
+                for i, box in enumerate(cur_boxes):
+                    if i in matched_boxes:
+                        continue
+                    iou = calc_iou(prev, box)
+                    if iou > best_iou:
+                        best_iou = iou
+                        best_idx = i
+                if best_iou >= IOU_THRESHOLD and best_idx >= 0:
+                    # 매칭 성공 → 스무딩 적용
+                    box = cur_boxes[best_idx]
+                    fdata['x1'] = int(fdata['x1'] * (1 - SMOOTH_ALPHA) + box[0] * SMOOTH_ALPHA)
+                    fdata['y1'] = int(fdata['y1'] * (1 - SMOOTH_ALPHA) + box[1] * SMOOTH_ALPHA)
+                    fdata['x2'] = int(fdata['x2'] * (1 - SMOOTH_ALPHA) + box[2] * SMOOTH_ALPHA)
+                    fdata['y2'] = int(fdata['y2'] * (1 - SMOOTH_ALPHA) + box[3] * SMOOTH_ALPHA)
+                    fdata['missed'] = 0
+                    matched_ids.add(fid)
+                    matched_boxes.add(best_idx)
+
+            # 매칭 안 된 기존 얼굴 → missed 증가 (캐리 포워드)
+            expired = []
+            for fid, fdata in tracked_faces.items():
+                if fid not in matched_ids:
+                    fdata['missed'] += 1
+                    if fdata['missed'] > CARRY_FRAMES:
+                        expired.append(fid)
+            for fid in expired:
+                del tracked_faces[fid]
+
+            # 매칭 안 된 새 감지 → 새 추적 ID 부여
+            for i, box in enumerate(cur_boxes):
+                if i not in matched_boxes:
+                    tracked_faces[next_face_id] = {
+                        'x1': box[0], 'y1': box[1],
+                        'x2': box[2], 'y2': box[3],
+                        'missed': 0
+                    }
+                    next_face_id += 1
+
+            # 모든 추적 얼굴에 블러 적용
+            for fdata in tracked_faces.values():
+                fx1 = max(0, fdata['x1'])
+                fy1 = max(0, fdata['y1'])
+                fx2 = min(w, fdata['x2'])
+                fy2 = min(h, fdata['y2'])
+                if fx2 > fx1 and fy2 > fy1:
+                    roi = frame[fy1:fy2, fx1:fx2]
+                    blurred = cv2.GaussianBlur(roi, (blur_k, blur_k), 0)
+                    frame[fy1:fy2, fx1:fx2] = blurred
 
             out.write(frame)
             frame_idx += 1

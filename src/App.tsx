@@ -9,7 +9,7 @@
 //   5. 구간반복 모드: 검색 결과 클릭 시 해당 구간을 앱 내 플레이어로 반복 재생
 // ============================================================
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, Fragment } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 // lucide-react: 아이콘 라이브러리
 import { Youtube, Send, Copy, Download, Loader2, FileText, CheckCircle2, Search, Clock, RotateCcw } from 'lucide-react';
@@ -29,7 +29,9 @@ import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 import TimelinePlugin from 'wavesurfer.js/dist/plugins/timeline.esm.js';
 import MinimapPlugin from 'wavesurfer.js/dist/plugins/minimap.esm.js';
-
+import StickerTimeline from './StickerTimeline';
+import { makeTrack, interpolateKF, isStickerVisible, nextTrackColor } from './stickerTypes';
+import type { StickerTrack, StickerKeyframe } from './stickerTypes';
 // ─── 한글 자모 분해 (오타/미완성 입력 대응) ─────────────────────────
 const INITIALS = 'ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ';
 const MEDIALS  = 'ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ';
@@ -1030,6 +1032,72 @@ function App() {
   const [faceBlurConfidence, setFaceBlurConfidence] = useState(0.3);
   const [faceBlurCarry, setFaceBlurCarry] = useState(8);
   const [faceBlurSmooth, setFaceBlurSmooth] = useState(0.4);
+  // 얼굴 이미지 합성 (자동 감지 방식)
+  const [overlayImage, setOverlayImage] = useState<string>(''); // base64
+  const [overlayPreview, setOverlayPreview] = useState<string>('');
+  const [overlayPosition, setOverlayPosition] = useState<'above'|'center'|'below'>('above');
+  const [overlayScale, setOverlayScale] = useState(1.2);
+  const [overlayOffsetY, setOverlayOffsetY] = useState(0.0);
+  const [overlayLoading, setOverlayLoading] = useState(false);
+
+  // ── 키프레임 스티커 트랙 ──────────────────────────────
+  const [stickerTracks, setStickerTracks] = useState<import('./stickerTypes').StickerTrack[]>([]);
+  const [activeTrackId, setActiveTrackId] = useState<string | null>(null);
+  const [stickerDragging, setStickerDragging] = useState(false);
+  const [kfRenderLoading, setKfRenderLoading] = useState(false);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [videoCurrentTime, setVideoCurrentTime] = useState(0); // 타임라인 플레이헤드용
+  // 활성 트랙 편의 getter
+  const activeTrack = stickerTracks.find(t => t.id === activeTrackId) ?? null;
+
+  // 활성 트랙의 현재 시간 기준 보간 상태 (영상 위 드래그용)
+  const [stickerPos, setStickerPos] = useState({ x: 40, y: 20 });
+  const [stickerScale, setStickerScale] = useState(1.0);
+  const [stickerRotation, setStickerRotation] = useState(0);
+  const [stickerOpacity, setStickerOpacity] = useState(1.0);
+
+  // 트래킹 모드
+  const [trackingMode, setTrackingMode] = useState(false);          // 클릭 선택 대기 중
+  const [trackingBox, setTrackingBox] = useState<{x:number,y:number,w:number,h:number}|null>(null);
+  const [trackingLoading, setTrackingLoading] = useState(false);
+  const [trackingInterval, setTrackingInterval] = useState(1.0);    // 키프레임 간격(초)
+  const [trackMode, setTrackMode] = useState<'face'|'generic'>('face'); // 트래킹 방식
+
+  // 영상 시간 변경 → 활성 트랙 보간 위치 업데이트
+  useEffect(() => {
+    const vid = localVideoRef.current;
+    if (!vid) return;
+    const onMeta = () => setVideoDuration(vid.duration || 0);
+    const onTime = () => setVideoCurrentTime(vid.currentTime);
+    vid.addEventListener('loadedmetadata', onMeta);
+    vid.addEventListener('timeupdate', onTime);
+    vid.addEventListener('seeked', onTime);
+    return () => {
+      vid.removeEventListener('loadedmetadata', onMeta);
+      vid.removeEventListener('timeupdate', onTime);
+      vid.removeEventListener('seeked', onTime);
+    };
+  }, [localVideoRef, localMediaUrl]);
+
+  useEffect(() => {
+    if (stickerDragging || !activeTrack) return;
+    const vid = localVideoRef.current;
+    if (!vid) return;
+    // interpolateKF, isStickerVisible are imported at top level
+    const onTime = () => {
+      if (stickerDragging) return;
+      const t = vid.currentTime;
+      if (!isStickerVisible(activeTrack, t)) return;
+      const kf = interpolateKF(activeTrack.keyframes, t);
+      setStickerPos({ x: kf.x, y: kf.y });
+      setStickerScale(kf.scale);
+      setStickerRotation(kf.rotation);
+      setStickerOpacity(kf.opacity);
+    };
+    vid.addEventListener('timeupdate', onTime);
+    vid.addEventListener('seeked', onTime);
+    return () => { vid.removeEventListener('timeupdate', onTime); vid.removeEventListener('seeked', onTime); };
+  }, [activeTrack, stickerDragging]);
 
   /**
    * 컨테이너 % 좌표를 실제 영상 콘텐츠 % 좌표로 변환
@@ -3889,8 +3957,136 @@ function App() {
                         } : {}),
                       }}
                     />
+                    {/* ── 트래킹 선택 오버레이 ── */}
+                    {trackingMode && activeTrack && (
+                      <div
+                        style={{
+                          position: 'absolute', inset: 0, zIndex: 60,
+                          cursor: 'crosshair',
+                          background: trackingBox ? 'transparent' : 'rgba(6,182,212,0.06)',
+                        }}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          const rectEl = e.currentTarget.getBoundingClientRect();
+                          const sx = ((e.clientX - rectEl.left) / rectEl.width) * 100;
+                          const sy = ((e.clientY - rectEl.top) / rectEl.height) * 100;
+                          const onMove = (ev: MouseEvent) => {
+                            const ex = ((ev.clientX - rectEl.left) / rectEl.width) * 100;
+                            const ey = ((ev.clientY - rectEl.top) / rectEl.height) * 100;
+                            setTrackingBox({ x: Math.min(sx, ex), y: Math.min(sy, ey), w: Math.max(2, Math.abs(ex - sx)), h: Math.max(2, Math.abs(ey - sy)) });
+                          };
+                          const onUp = () => { window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                          window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
+                        }}
+                      >
+                        {!trackingBox && (
+                          <div style={{ position:'absolute', top:'50%', left:'50%', transform:'translate(-50%,-50%)', background:'rgba(6,182,212,0.85)', color:'#fff', padding:'4px 10px', borderRadius:6, fontSize:'0.6rem', pointerEvents:'none', whiteSpace:'nowrap' }}>
+                            추적할 영역을 드래그하여 선택하세요 (얼굴·손·몸 등)
+                          </div>
+                        )}
+                        {trackingBox && (
+                          <div style={{ position:'absolute', left:`${trackingBox.x}%`, top:`${trackingBox.y}%`, width:`${trackingBox.w}%`, height:`${trackingBox.h}%`, border:'2px solid #06b6d4', background:'rgba(6,182,212,0.08)', pointerEvents:'none' }}>
+                            {(['tl','tr','bl','br'] as const).map(c => (
+                              <div key={c} style={{ position:'absolute', width:7, height:7, background:'#06b6d4', ...(c[0]==='t'?{top:-3}:{bottom:-3}), ...(c[1]==='l'?{left:-3}:{right:-3}) }} />
+                            ))}
+                            <div style={{ position:'absolute', top:-18, left:0, background:'rgba(6,182,212,0.9)', color:'#fff', fontSize:'0.45rem', padding:'1px 4px', borderRadius:3, whiteSpace:'nowrap' }}>
+                              {Math.round(trackingBox.w)}% × {Math.round(trackingBox.h)}%
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
-                    {/* 확대 시 드래그 오버레이 — 영상 위치 조절 */}
+                    {/* ── 스티커 트랙 오버레이 ── */}
+                    {stickerTracks.map(track => {
+
+                      const vid = localVideoRef.current;
+                      const t = vid ? vid.currentTime : 0;
+                      if (!isStickerVisible(track, t)) return null;
+                      const kf = interpolateKF(track.keyframes, t);
+                      const isActive = track.id === activeTrackId;
+                      const posX = isActive && stickerDragging ? stickerPos.x : kf.x;
+                      const posY = isActive && stickerDragging ? stickerPos.y : kf.y;
+                      const sc = isActive && stickerDragging ? stickerScale : kf.scale;
+                      const rot = isActive && stickerDragging ? stickerRotation : kf.rotation;
+                      const op = isActive && stickerDragging ? stickerOpacity : kf.opacity;
+                      return (
+                        <Fragment key={track.id}>
+                          <div
+                            style={{
+                              position: 'absolute',
+                              left: `${posX}%`, top: `${posY}%`,
+                              width: `${15 * sc}%`,
+                              cursor: isActive ? (stickerDragging ? 'grabbing' : 'grab') : 'default',
+                              pointerEvents: isActive ? 'auto' : 'none',
+                              zIndex: isActive ? 50 : 40,
+                              outline: isActive ? `2px dashed ${track.color}cc` : 'none',
+                              outlineOffset: 2,
+                              borderRadius: 4,
+                              userSelect: 'none',
+                              transform: `rotate(${rot}deg)`,
+                              opacity: op,
+                            }}
+                            onClick={() => setActiveTrackId(track.id)}
+                            onMouseDown={isActive ? (e) => {
+                              e.stopPropagation(); e.preventDefault();
+                              setStickerDragging(true);
+                              const container = e.currentTarget.parentElement!;
+                              const cRect = container.getBoundingClientRect();
+                              const startX = posX; const startY = posY;
+                              const ox = e.clientX; const oy = e.clientY;
+                              const onMove = (ev: MouseEvent) => {
+                                setStickerPos({
+                                  x: Math.max(0, Math.min(90, startX + ((ev.clientX - ox) / cRect.width) * 100)),
+                                  y: Math.max(0, Math.min(90, startY + ((ev.clientY - oy) / cRect.height) * 100)),
+                                });
+                              };
+                              const onUp = () => { setStickerDragging(false); window.removeEventListener('mousemove', onMove); window.removeEventListener('mouseup', onUp); };
+                              window.addEventListener('mousemove', onMove); window.addEventListener('mouseup', onUp);
+                            } : undefined}
+                          >
+                            <img src={track.image} alt={track.name} draggable={false}
+                              style={{ width: '100%', height: 'auto', display: 'block', filter: 'drop-shadow(0 2px 8px rgba(0,0,0,0.7))' }}
+                            />
+                          </div>
+                          {/* 위치 라벨 (활성 트랙만) */}
+                          {isActive && (
+                            <div style={{
+                              position: 'absolute', left: `${posX}%`, top: `${posY}%`,
+                              transform: 'translateY(-115%)',
+                              background: 'rgba(0,0,0,0.85)', color: track.color,
+                              fontSize: '0.43rem', padding: '1px 5px', borderRadius: 3,
+                              whiteSpace: 'nowrap', pointerEvents: 'none', zIndex: 51,
+                            }}>
+                              📍 {track.name} ({Math.round(posX)},{Math.round(posY)}) ×{sc.toFixed(1)} {rot !== 0 ? `${Math.round(rot)}°` : ''}
+                            </div>
+                          )}
+                          {/* 키프레임 마커 (활성 트랙만) */}
+                          {isActive && track.keyframes.map((k, i) => (
+                            <div key={i} style={{
+                              position: 'absolute', left: `${k.x}%`, top: `${k.y}%`,
+                              transform: 'translate(-50%,-50%) rotate(45deg)',
+                              width: 10, height: 10,
+                              background: track.color, border: `1.5px solid #fff`,
+                              borderRadius: 1, pointerEvents: 'none', zIndex: 49,
+                              opacity: 0.85,
+                            }} title={`KF${i+1}: ${k.time.toFixed(1)}s`} />
+                          ))}
+                          {/* 이동 경로 (활성 트랙만) */}
+                          {isActive && track.keyframes.length > 1 && (
+                            <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', zIndex: 48 }}>
+                              {track.keyframes.map((k, i) => i < track.keyframes.length - 1 ? (
+                                <line key={i} x1={`${k.x}%`} y1={`${k.y}%`}
+                                  x2={`${track.keyframes[i+1].x}%`} y2={`${track.keyframes[i+1].y}%`}
+                                  stroke={`${track.color}66`} strokeWidth="1.5" strokeDasharray="5 3" />
+                              ) : null)}
+                            </svg>
+                          )}
+                        </Fragment>
+                      );
+                    })}
+
+
                     {outputSize.w > 0 && videoScale > 100 && (
                       <div
                         style={{
@@ -4329,6 +4525,32 @@ function App() {
                 />
               )}
 
+
+              {/* 스티커 트랙 타임라인 */}
+              {localMediaUrl && stickerTracks.length > 0 && (
+                <StickerTimeline
+                  tracks={stickerTracks}
+                  currentTime={videoCurrentTime}
+                  duration={videoDuration || 30}
+                  activeTrackId={activeTrackId}
+                  onSelectTrack={setActiveTrackId}
+                  onUpdateTrack={(id, patch) => setStickerTracks(prev => prev.map(t => t.id === id ? { ...t, ...patch } as import('./stickerTypes').StickerTrack : t))}
+                  onDeleteTrack={(id) => { setStickerTracks(prev => prev.filter(t => t.id !== id)); if (activeTrackId === id) setActiveTrackId(null); }}
+                  onSeek={(time) => { if (localVideoRef.current) localVideoRef.current.currentTime = time; }}
+                  onDeleteKeyframe={(trackId, kfIdx) => setStickerTracks(prev => prev.map(t => {
+                    if (t.id !== trackId) return t;
+                    const kfs = t.keyframes.filter((_, i) => i !== kfIdx);
+                    const sv = t.segmentVisible.filter((_, i) => i !== kfIdx);
+                    return { ...t, keyframes: kfs, segmentVisible: sv };
+                  }))}
+                  onToggleSegment={(trackId, segIdx) => setStickerTracks(prev => prev.map(t => {
+                    if (t.id !== trackId) return t;
+                    const sv = [...t.segmentVisible];
+                    sv[segIdx] = !(sv[segIdx] ?? true);
+                    return { ...t, segmentVisible: sv };
+                  }))}
+                />
+              )}
 
               {/* 액션 바 */}
               <div className="action-bar">
@@ -5284,6 +5506,184 @@ function App() {
                     </div>
                   )}
                 </>)}
+                <>
+                   {/* ── 스티커 트랙 추가 버튼 ── */}
+                   <label
+                     className="btn-icon"
+                     style={{ background: 'rgba(168,85,247,0.12)', borderColor: 'rgba(168,85,247,0.4)', color: '#c084fc', gap: '0.3rem', fontSize: '0.6rem', cursor: 'pointer' }}
+                     title="스티커 PNG를 선택하면 새 트랙이 생성됩니다"
+                   >
+                     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>
+                     +스티커
+                     <input type="file" accept="image/png,image/webp,image/gif" style={{ display: 'none' }} onChange={e => {
+                       const file = e.target.files?.[0];
+                       if (!file) return;
+                       const reader = new FileReader();
+                       reader.onload = () => {
+                         const b64 = reader.result as string;
+                         const dur = localVideoRef.current?.duration || 30;
+                         const track = makeTrack(file.name.replace(/\.[^.]+$/, ''), b64, dur);
+                         setStickerTracks(prev => [...prev, track]);
+                         setActiveTrackId(track.id);
+                         setStickerPos({ x: track.keyframes[0].x, y: track.keyframes[0].y });
+                         setStickerScale(1.0); setStickerRotation(0); setStickerOpacity(1.0);
+                       };
+                       reader.readAsDataURL(file);
+                       e.target.value = '';
+                     }} />
+                   </label>
+                   {/* 활성 트랙 컨트롤 */}
+                   {activeTrack && (<>
+                     <span style={{ display: 'flex', alignItems: 'center', gap: 3, background: `${activeTrack.color}22`, border: `1px solid ${activeTrack.color}44`, borderRadius: 6, padding: '1px 6px' }}>
+                       <img src={activeTrack.image} alt="" style={{ height: 16, borderRadius: 2 }} />
+                       <span style={{ fontSize: '0.5rem', color: activeTrack.color, maxWidth: 60, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{activeTrack.name}</span>
+                     </span>
+                     {/* ── 자동 트래킹 ── */}
+                     <span style={{ width: 1, height: 14, background: 'rgba(6,182,212,0.4)', margin: '0 1px' }} />
+                     <button
+                       className="btn-icon"
+                       style={{ background: trackingMode ? 'rgba(6,182,212,0.25)' : 'rgba(6,182,212,0.1)', borderColor: 'rgba(6,182,212,0.5)', color: '#22d3ee', gap: 2, fontSize: '0.55rem' }}
+                       title="영상에서 추적할 영역을 드래그로 선택하면 자동으로 키프레임을 생성합니다"
+                       onClick={() => { setTrackingMode(m => !m); setTrackingBox(null); }}
+                     >
+                       🎯 {trackingMode ? '취소' : '트래킹'}
+                     </button>
+                     {trackingMode && trackingBox && (
+                       <>
+                         <label title="키프레임 간격(초)" style={{ display:'flex', alignItems:'center', gap:2, fontSize:'0.5rem', color:'#94a3b8', whiteSpace:'nowrap' }}>
+                         {/* 트래킹 모드 선택 */}
+                         <span style={{ display:'flex', borderRadius:4, overflow:'hidden', border:'1px solid rgba(6,182,212,0.4)', fontSize:'0.48rem' }}>
+                           <button style={{ padding:'1px 5px', background: trackMode==='face' ? 'rgba(6,182,212,0.35)' : 'transparent', color: trackMode==='face' ? '#22d3ee' : '#94a3b8', border:'none', cursor:'pointer' }} onClick={() => setTrackMode('face')}>👤 얼굴</button>
+                           <button style={{ padding:'1px 5px', background: trackMode==='generic' ? 'rgba(6,182,212,0.35)' : 'transparent', color: trackMode==='generic' ? '#22d3ee' : '#94a3b8', border:'none', cursor:'pointer' }} onClick={() => setTrackMode('generic')}>📦 일반</button>
+                         </span>
+                           간격<input type="number" min={0.2} max={10} step={0.5} value={trackingInterval}
+                             onChange={e => setTrackingInterval(Number(e.target.value))}
+                             style={{ width:30, background:'rgba(15,23,42,0.8)', border:'1px solid rgba(6,182,212,0.4)', color:'#22d3ee', borderRadius:3, fontSize:'0.5rem', padding:'0 2px' }} />s
+                         </label>
+                         <button
+                           className="btn-icon"
+                           disabled={trackingLoading}
+                           style={{ background:'rgba(6,182,212,0.2)', borderColor:'rgba(6,182,212,0.5)', color: trackingLoading ? '#94a3b8' : '#22d3ee', gap:2, fontSize:'0.55rem', opacity: trackingLoading ? 0.6 : 1 }}
+                           title="선택된 영역을 영상 전체에서 자동 추적하여 키프레임 생성"
+                           onClick={async () => {
+                             if (!activeTrack || !trackingBox || trackingLoading) return;
+                             setTrackingLoading(true);
+                             try {
+                               const mediaPath = new URL(localMediaUrl).pathname;
+                               const resp = await fetch('http://localhost:8000/track-object', {
+                                 method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                 body: JSON.stringify({
+                                   media_path: mediaPath,
+                                   box_x: trackingBox.x, box_y: trackingBox.y,
+                                   box_w: trackingBox.w, box_h: trackingBox.h,
+                                   start_time: activeTrack.startTime, end_time: activeTrack.endTime,
+                                   interval: trackingInterval,
+                                   track_mode: trackMode,
+                                 }),
+                               });
+                               if (!resp.ok) { const err = await resp.json(); throw new Error(err.detail); }
+                               const data = await resp.json();
+                               const newKFs: StickerKeyframe[] = (data.keyframes as {time:number,x:number,y:number}[]).map((k: {time:number,x:number,y:number}) => ({
+                                 time: k.time, x: k.x, y: k.y,
+                                 scale: stickerScale, rotation: stickerRotation, opacity: stickerOpacity,
+                               }));
+                               setStickerTracks(prev => prev.map(tr => {
+                                 if (tr.id !== activeTrack.id) return tr;
+                                 return { ...tr, keyframes: newKFs, segmentVisible: Array(newKFs.length + 1).fill(true) };
+                               }));
+                               setTrackingMode(false); setTrackingBox(null);
+                               alert(`✅ 트래킹 완료! ${newKFs.length}개 키프레임 생성됨`);
+                             } catch(e:any) { alert(`트래킹 실패: ${e.message}`); }
+                             finally { setTrackingLoading(false); }
+                           }}
+                         >
+                           {trackingLoading
+                             ? <><span style={{ display:'inline-block', width:10, height:10, border:'2px solid #22d3ee', borderTop:'2px solid transparent', borderRadius:'50%', animation:'spin 1s linear infinite' }} /> 추적중...</>
+                             : '▶ 추적 시작'
+                           }
+                         </button>
+                         <button className="btn-icon" style={{ padding:'0.15rem 0.3rem', color:'#94a3b8', fontSize:'0.5rem' }} onClick={() => setTrackingBox(null)} title="선택 초기화">↺</button>
+                       </>
+                     )}
+                     <span style={{ width: 1, height: 14, background: 'rgba(100,116,139,0.3)', margin: '0 1px' }} />
+
+                     <label title="크기" style={{ display: 'flex', alignItems: 'center', gap: 2, fontSize: '0.5rem', color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                       크기<input type="range" min="20" max="300" value={Math.round(stickerScale*100)} onChange={e => setStickerScale(Number(e.target.value)/100)} style={{ width: 38, accentColor: activeTrack.color }} />
+                       <span style={{ color: activeTrack.color, minWidth: 24 }}>{Math.round(stickerScale*100)}%</span>
+                     </label>
+                     <label title="회전 (°)" style={{ display: 'flex', alignItems: 'center', gap: 2, fontSize: '0.5rem', color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                       회전<input type="range" min="-180" max="180" value={Math.round(stickerRotation)} onChange={e => setStickerRotation(Number(e.target.value))} style={{ width: 38, accentColor: activeTrack.color }} />
+                       <span style={{ color: activeTrack.color, minWidth: 24 }}>{Math.round(stickerRotation)}°</span>
+                     </label>
+                     <label title="투명도" style={{ display: 'flex', alignItems: 'center', gap: 2, fontSize: '0.5rem', color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                       투명<input type="range" min="0" max="100" value={Math.round(stickerOpacity*100)} onChange={e => setStickerOpacity(Number(e.target.value)/100)} style={{ width: 38, accentColor: activeTrack.color }} />
+                       <span style={{ color: activeTrack.color, minWidth: 24 }}>{Math.round(stickerOpacity*100)}%</span>
+                     </label>
+                     <button
+                       className="btn-icon"
+                       style={{ background: 'rgba(234,179,8,0.15)', borderColor: 'rgba(234,179,8,0.4)', color: '#facc15', gap: 2, fontSize: '0.55rem' }}
+                       title="현재 시간+위치를 이 트랙의 키프레임으로 추가"
+                       onClick={() => {
+                         const vid = localVideoRef.current;
+                         const t = vid ? vid.currentTime : 0;
+                         setStickerTracks(prev => prev.map(tr => {
+                           if (tr.id !== activeTrack.id) return tr;
+                           const newKF: StickerKeyframe = { time: t, x: stickerPos.x, y: stickerPos.y, scale: stickerScale, rotation: stickerRotation, opacity: stickerOpacity };
+                           const kfs = [...tr.keyframes.filter(k => Math.abs(k.time - t) > 0.05), newKF].sort((a, b) => a.time - b.time);
+                           const sv = Array(kfs.length + 1).fill(true);
+                           return { ...tr, keyframes: kfs, segmentVisible: sv };
+                         }));
+                       }}
+                     >
+                       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                       키프레임
+                     </button>
+                     <span style={{ background: 'rgba(234,179,8,0.2)', color: '#facc15', borderRadius: 8, padding: '0.1rem 0.4rem', fontSize: '0.5rem', fontWeight: 600 }}>
+                       {activeTrack.keyframes.length}개
+                     </span>
+                     <button
+                       className="btn-icon"
+                       disabled={kfRenderLoading}
+                       style={{ background: 'rgba(234,179,8,0.2)', borderColor: 'rgba(234,179,8,0.5)', color: kfRenderLoading ? '#94a3b8' : '#facc15', gap: 2, fontSize: '0.55rem', opacity: kfRenderLoading ? 0.6 : 1 }}
+                       title="이 트랙의 키프레임으로 스티커 합성 저장"
+                       onClick={async () => {
+                         if (kfRenderLoading || !activeTrack || activeTrack.keyframes.length === 0) return;
+                         setKfRenderLoading(true);
+                         try {
+                           const defaultName = `${localFileName || 'video'}_${activeTrack.name}.mp4`;
+                           let fileHandle: any = null;
+                           if ('showSaveFilePicker' in window) {
+                             try { fileHandle = await (window as any).showSaveFilePicker({ suggestedName: defaultName, types: [{ description: 'MP4', accept: { 'video/mp4': ['.mp4'] } }] }); }
+                             catch (p: any) { if (p.name === 'AbortError') { setKfRenderLoading(false); return; } throw p; }
+                           }
+                           const mediaPath = new URL(localMediaUrl).pathname;
+                           const resp = await fetch('http://localhost:8000/overlay-keyframes', {
+                             method: 'POST', headers: { 'Content-Type': 'application/json' },
+                             body: JSON.stringify({
+                               media_path: mediaPath,
+                               overlay_base64: activeTrack.image,
+                               keyframes: activeTrack.keyframes.map(k => ({ time: k.time, x: k.x, y: k.y, scale: k.scale })),
+                               start: activeTrack.startTime, end: activeTrack.endTime,
+                             }),
+                           });
+                           if (!resp.ok) { const err = await resp.json(); throw new Error(err.detail); }
+                           const blob = await resp.blob();
+                           if (fileHandle) {
+                             const wr = await fileHandle.createWritable(); await wr.write(blob); await wr.close();
+                             alert(`✅ 합성 완료!\n저장: ${fileHandle.name}`);
+                           } else {
+                             const u = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = u; a.download = defaultName;
+                             document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(u);
+                           }
+                         } catch (e: any) { alert(`합성 실패: ${e.message}`); } finally { setKfRenderLoading(false); }
+                       }}
+                     >
+                       {kfRenderLoading ? <span style={{ display: 'inline-block', width: 11, height: 11, border: '2px solid #facc15', borderTop: '2px solid transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} /> :
+                         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                       }
+                       {kfRenderLoading ? '처리중...' : '저장'}
+                     </button>
+                   </>)}
                 {/* 편집 다운로드 버튼 (프레임/자막가리기/비율 활성 시) */}
                 {(showCropOverlay || subtitleCoverEnabled || (outputSize.w > 0 && outputSize.h > 0)) && (
                   <button
@@ -5417,6 +5817,7 @@ function App() {
                     편집 다운로드
                   </button>
                 )}
+                </>
                 </>)}
 
                 {/* ── 툴바 팔레트 메뉴 ── */}

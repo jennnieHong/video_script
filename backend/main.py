@@ -1653,6 +1653,624 @@ async def blur_faces(request: BlurFacesRequest, background_tasks: BackgroundTask
         logger.error(f"얼굴 블러 오류: {e}")
         raise HTTPException(status_code=500, detail=f"로컬 편집에 실패했습니다: {e}")
 
+# ─── 얼굴 이미지 합성 ─────────────────────────────────────────────
+class OverlayFacesRequest(BaseModel):
+    media_path: str
+    overlay_base64: str  # base64 인코딩된 PNG (알파 채널 포함)
+    start: float = 0
+    end: float = 0
+    position: str = "above"  # above(머리 위), center(얼굴 위), below(턱 아래)
+    scale: float = 1.2  # 얼굴 너비 대비 오버레이 크기 비율
+    offset_y: float = 0.0  # 수직 오프셋 (얼굴 높이 대비 %, 음수=위로)
+    confidence: float = 0.3
+    carry_frames: int = 8
+    smooth_alpha: float = 0.4
+
+@app.post("/overlay-faces")
+async def overlay_faces(request: OverlayFacesRequest, background_tasks: BackgroundTasks):
+    """얼굴에 사용자 이미지(PNG)를 합성합니다."""
+    if cv2 is None or mp is None:
+        raise HTTPException(status_code=500, detail="opencv-python, mediapipe 필요")
+
+    rel = request.media_path.lstrip("/")
+    src_path = str(BASE_DIR / rel)
+    if not os.path.exists(src_path):
+        raise HTTPException(status_code=400, detail=f"파일 없음: {request.media_path}")
+
+    # base64 → numpy 이미지 (BGRA)
+    import base64
+    import numpy as np
+    try:
+        img_data = base64.b64decode(request.overlay_base64.split(",")[-1])
+        nparr = np.frombuffer(img_data, np.uint8)
+        overlay_img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+        if overlay_img is None:
+            raise ValueError("이미지 디코딩 실패")
+        # 알파 채널 없으면 추가
+        if overlay_img.shape[2] == 3:
+            alpha_ch = np.full((*overlay_img.shape[:2], 1), 255, dtype=np.uint8)
+            overlay_img = np.concatenate([overlay_img, alpha_ch], axis=2)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"오버레이 이미지 오류: {e}")
+
+    temp_dir = tempfile.mkdtemp()
+    video_only_path = os.path.join(temp_dir, "video_overlay.mp4")
+    final_path = os.path.join(temp_dir, "face_overlay.mp4")
+
+    try:
+        cap = cv2.VideoCapture(src_path)
+        if not cap.isOpened():
+            raise RuntimeError("영상 파일을 열 수 없습니다.")
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        start_frame = int(request.start * fps) if request.start > 0 else 0
+        end_frame = int(request.end * fps) if request.end > 0 else total_frames
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(video_only_path, fourcc, fps, (w, h))
+
+        # mediapipe 얼굴 감지
+        from mediapipe.tasks.python import vision as mp_vision, BaseOptions as MpBaseOptions
+        model_path = str(BASE_DIR / "blaze_face_short_range.tflite")
+        if not os.path.exists(model_path):
+            import urllib.request
+            url = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite"
+            urllib.request.urlretrieve(url, model_path)
+
+        detector_options = mp_vision.FaceDetectorOptions(
+            base_options=MpBaseOptions(model_asset_path=model_path),
+            min_detection_confidence=request.confidence
+        )
+        face_detector = mp_vision.FaceDetector.create_from_options(detector_options)
+
+        # 트래킹 상태
+        tracked_faces: dict = {}
+        next_face_id = 0
+        SMOOTH_ALPHA = max(0.05, min(1.0, request.smooth_alpha))
+        CARRY_FRAMES = max(0, min(30, request.carry_frames))
+        IOU_THRESHOLD = 0.3
+
+        def calc_iou(a, b):
+            ix1 = max(a[0], b[0]); iy1 = max(a[1], b[1])
+            ix2 = min(a[2], b[2]); iy2 = min(a[3], b[3])
+            inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+            area_a = (a[2] - a[0]) * (a[3] - a[1])
+            area_b = (b[2] - b[0]) * (b[3] - b[1])
+            union = area_a + area_b - inter
+            return inter / union if union > 0 else 0
+
+        def alpha_blend(frame, overlay_bgra, x, y):
+            """알파 블렌딩으로 오버레이 합성"""
+            oh, ow = overlay_bgra.shape[:2]
+            # 프레임 경계 클리핑
+            x1, y1 = max(0, x), max(0, y)
+            x2, y2 = min(w, x + ow), min(h, y + oh)
+            if x2 <= x1 or y2 <= y1:
+                return
+            # 오버레이 영역 클리핑
+            ox1 = x1 - x; oy1 = y1 - y
+            ox2 = ox1 + (x2 - x1); oy2 = oy1 + (y2 - y1)
+            roi = overlay_bgra[oy1:oy2, ox1:ox2]
+            alpha = roi[:, :, 3:4].astype(np.float32) / 255.0
+            bg = frame[y1:y2, x1:x2].astype(np.float32)
+            fg = roi[:, :, :3].astype(np.float32)
+            frame[y1:y2, x1:x2] = (bg * (1 - alpha) + fg * alpha).astype(np.uint8)
+
+        frame_idx = start_frame
+        processed = 0
+        logger.info(f"🟣 이미지 합성 시작: {src_path} ({start_frame}-{end_frame}, overlay={overlay_img.shape})")
+
+        while frame_idx < end_frame:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            results = face_detector.detect(mp_image)
+
+            # 감지 박스 추출
+            cur_boxes = []
+            if results.detections:
+                for det in results.detections:
+                    bb = det.bounding_box
+                    cur_boxes.append((bb.origin_x, bb.origin_y, bb.origin_x + bb.width, bb.origin_y + bb.height))
+
+            # IoU 매칭 + 스무딩
+            matched_ids = set()
+            matched_boxes = set()
+            for fid, fdata in tracked_faces.items():
+                prev = (fdata['x1'], fdata['y1'], fdata['x2'], fdata['y2'])
+                best_iou, best_idx = 0, -1
+                for i, box in enumerate(cur_boxes):
+                    if i in matched_boxes:
+                        continue
+                    iou = calc_iou(prev, box)
+                    if iou > best_iou:
+                        best_iou = iou; best_idx = i
+                if best_iou >= IOU_THRESHOLD and best_idx >= 0:
+                    box = cur_boxes[best_idx]
+                    fdata['x1'] = int(fdata['x1'] * (1 - SMOOTH_ALPHA) + box[0] * SMOOTH_ALPHA)
+                    fdata['y1'] = int(fdata['y1'] * (1 - SMOOTH_ALPHA) + box[1] * SMOOTH_ALPHA)
+                    fdata['x2'] = int(fdata['x2'] * (1 - SMOOTH_ALPHA) + box[2] * SMOOTH_ALPHA)
+                    fdata['y2'] = int(fdata['y2'] * (1 - SMOOTH_ALPHA) + box[3] * SMOOTH_ALPHA)
+                    fdata['missed'] = 0
+                    matched_ids.add(fid); matched_boxes.add(best_idx)
+
+            expired = [fid for fid, fd in tracked_faces.items() if fid not in matched_ids and fd.update(missed=fd.get('missed', 0) + 1) is None and fd['missed'] > CARRY_FRAMES]
+            # carry-forward
+            for fid in list(tracked_faces.keys()):
+                if fid not in matched_ids:
+                    tracked_faces[fid]['missed'] = tracked_faces[fid].get('missed', 0) + 1
+                    if tracked_faces[fid]['missed'] > CARRY_FRAMES:
+                        del tracked_faces[fid]
+
+            for i, box in enumerate(cur_boxes):
+                if i not in matched_boxes:
+                    tracked_faces[next_face_id] = {'x1': int(box[0]), 'y1': int(box[1]), 'x2': int(box[2]), 'y2': int(box[3]), 'missed': 0}
+                    next_face_id += 1
+
+            # 각 얼굴에 오버레이 합성
+            for fdata in tracked_faces.values():
+                fx1, fy1, fx2, fy2 = fdata['x1'], fdata['y1'], fdata['x2'], fdata['y2']
+                fw = fx2 - fx1
+                fh = fy2 - fy1
+                if fw <= 0 or fh <= 0:
+                    continue
+
+                # 오버레이 스케일링
+                target_w = int(fw * request.scale)
+                img_aspect = overlay_img.shape[0] / overlay_img.shape[1]
+                target_h = int(target_w * img_aspect)
+                resized = cv2.resize(overlay_img, (target_w, target_h), interpolation=cv2.INTER_AREA)
+
+                # 위치 계산
+                cx = fx1 + fw // 2  # 얼굴 중심 X
+                ox = cx - target_w // 2
+
+                if request.position == "above":
+                    oy = fy1 - target_h + int(fh * 0.1)  # 머리 위
+                elif request.position == "below":
+                    oy = fy2 - int(fh * 0.1)  # 턱 아래
+                else:  # center
+                    oy = fy1 + fh // 2 - target_h // 2  # 얼굴 중앙
+
+                # 수직 오프셋 적용
+                oy += int(fh * request.offset_y)
+
+                alpha_blend(frame, resized, ox, oy)
+
+            out.write(frame)
+            frame_idx += 1
+            processed += 1
+
+        cap.release()
+        out.release()
+        face_detector.close()
+        logger.info(f"🟣 이미지 합성 완료: {processed}프레임")
+
+        # 오디오 결합
+        ffmpeg_exe = FFMPEG_PATH if FFMPEG_PATH else "ffmpeg"
+        mux_cmd = [ffmpeg_exe, "-y"]
+        if request.start > 0:
+            mux_cmd += ["-ss", str(request.start)]
+        mux_cmd += ["-i", src_path, "-i", video_only_path]
+        if request.end > 0 and request.end > request.start:
+            mux_cmd += ["-t", str(request.end - request.start)]
+        mux_cmd += ["-map", "1:v", "-map", "0:a?", "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-c:a", "aac", "-shortest", final_path]
+
+        mux_result = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=600)
+        if mux_result.returncode != 0:
+            raise RuntimeError(f"오디오 결합 실패: {mux_result.stderr[-300:]}")
+
+        def iterfile():
+            with open(final_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+
+        def cleanup():
+            time.sleep(10)
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+        background_tasks.add_task(cleanup)
+        safe_name = os.path.basename(src_path).rsplit('.', 1)[0]
+        return StreamingResponse(
+            iterfile(),
+            media_type="video/mp4",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}_overlay.mp4"'}
+        )
+
+    except Exception as e:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.error(f"이미지 합성 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"이미지 합성 실패: {e}")
+
+# ─── 키프레임 스티커 합성 ─────────────────────────────────────────
+from typing import List as TList
+
+class Keyframe(BaseModel):
+    time: float
+    x: float
+    y: float
+    scale: float = 1.0
+
+class OverlayKeyframesRequest(BaseModel):
+    media_path: str
+    overlay_base64: str
+    keyframes: TList[Keyframe]
+    start: float = 0
+    end: float = 0
+
+@app.post("/overlay-keyframes")
+async def overlay_keyframes(request: OverlayKeyframesRequest, background_tasks: BackgroundTasks):
+    """키프레임 기반 수동 스티커 합성"""
+    if cv2 is None:
+        raise HTTPException(status_code=500, detail="opencv-python 필요")
+    if not request.keyframes:
+        raise HTTPException(status_code=400, detail="키프레임이 없습니다.")
+
+    rel = request.media_path.lstrip("/")
+    src_path = str(BASE_DIR / rel)
+    if not os.path.exists(src_path):
+        raise HTTPException(status_code=400, detail=f"파일 없음: {request.media_path}")
+
+    import base64, numpy as np
+    try:
+        img_data = base64.b64decode(request.overlay_base64.split(",")[-1])
+        nparr = np.frombuffer(img_data, np.uint8)
+        overlay_img = cv2.imdecode(nparr, cv2.IMREAD_UNCHANGED)
+        if overlay_img is None:
+            raise ValueError("디코딩 실패")
+        if overlay_img.shape[2] == 3:
+            alpha_ch = np.full((*overlay_img.shape[:2], 1), 255, dtype=np.uint8)
+            overlay_img = np.concatenate([overlay_img, alpha_ch], axis=2)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"이미지 오류: {e}")
+
+    kfs = sorted([kf.model_dump() for kf in request.keyframes], key=lambda k: k['time'])
+    temp_dir = tempfile.mkdtemp()
+    video_only_path = os.path.join(temp_dir, "video_kf.mp4")
+    final_path = os.path.join(temp_dir, "keyframe_overlay.mp4")
+
+    try:
+        cap = cv2.VideoCapture(src_path)
+        if not cap.isOpened():
+            raise RuntimeError("영상을 열 수 없습니다.")
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30
+        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        start_frame = int(request.start * fps) if request.start > 0 else 0
+        end_frame = int(request.end * fps) if request.end > 0 else total_frames
+        if start_frame > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(video_only_path, fourcc, fps, (w, h))
+
+        def interp(t):
+            if len(kfs) == 1:
+                return kfs[0]['x'], kfs[0]['y'], kfs[0]['scale']
+            if t <= kfs[0]['time']:
+                return kfs[0]['x'], kfs[0]['y'], kfs[0]['scale']
+            if t >= kfs[-1]['time']:
+                return kfs[-1]['x'], kfs[-1]['y'], kfs[-1]['scale']
+            for i in range(len(kfs) - 1):
+                t0, t1 = kfs[i]['time'], kfs[i + 1]['time']
+                if t0 <= t <= t1:
+                    r = (t - t0) / (t1 - t0) if t1 != t0 else 0
+                    return (kfs[i]['x'] + (kfs[i+1]['x'] - kfs[i]['x']) * r,
+                            kfs[i]['y'] + (kfs[i+1]['y'] - kfs[i]['y']) * r,
+                            kfs[i]['scale'] + (kfs[i+1]['scale'] - kfs[i]['scale']) * r)
+            return kfs[-1]['x'], kfs[-1]['y'], kfs[-1]['scale']
+
+        def alpha_blend(frame, ov, px, py):
+            oh, ow = ov.shape[:2]
+            x1, y1 = max(0, px), max(0, py)
+            x2, y2 = min(w, px + ow), min(h, py + oh)
+            if x2 <= x1 or y2 <= y1: return
+            ox1, oy1 = x1 - px, y1 - py
+            roi = ov[oy1:oy1+(y2-y1), ox1:ox1+(x2-x1)]
+            a = roi[:, :, 3:4].astype(np.float32) / 255.0
+            bg = frame[y1:y2, x1:x2].astype(np.float32)
+            fg = roi[:, :, :3].astype(np.float32)
+            frame[y1:y2, x1:x2] = (bg * (1 - a) + fg * a).astype(np.uint8)
+
+        base_w = int(w * 0.15)
+        frame_idx = start_frame
+        processed = 0
+        logger.info(f"🟡 키프레임 합성: {len(kfs)}개, {start_frame}-{end_frame}")
+
+        while frame_idx < end_frame:
+            ret, frame = cap.read()
+            if not ret: break
+            t = frame_idx / fps
+            ix, iy, iscale = interp(t)
+            tw = max(1, int(base_w * iscale))
+            img_asp = overlay_img.shape[0] / overlay_img.shape[1]
+            th = max(1, int(tw * img_asp))
+            resized = cv2.resize(overlay_img, (tw, th), interpolation=cv2.INTER_AREA)
+            px = int(ix / 100 * w)
+            py = int(iy / 100 * h)
+            alpha_blend(frame, resized, px, py)
+            out.write(frame)
+            frame_idx += 1
+            processed += 1
+
+        cap.release(); out.release()
+        logger.info(f"🟡 키프레임 합성 완료: {processed}프레임")
+
+        ffmpeg_exe = FFMPEG_PATH if FFMPEG_PATH else "ffmpeg"
+        mux_cmd = [ffmpeg_exe, "-y"]
+        if request.start > 0:
+            mux_cmd += ["-ss", str(request.start)]
+        mux_cmd += ["-i", src_path, "-i", video_only_path]
+        if request.end > 0 and request.end > request.start:
+            mux_cmd += ["-t", str(request.end - request.start)]
+        mux_cmd += ["-map", "1:v", "-map", "0:a?", "-c:v", "libx264", "-crf", "18", "-preset", "fast", "-c:a", "aac", "-shortest", final_path]
+        mr = subprocess.run(mux_cmd, capture_output=True, text=True, timeout=600)
+        if mr.returncode != 0:
+            raise RuntimeError(f"오디오 결합 실패: {mr.stderr[-300:]}")
+
+        def iterfile():
+            with open(final_path, "rb") as f:
+                while chunk := f.read(1024 * 1024):
+                    yield chunk
+        def cleanup():
+            time.sleep(10); shutil.rmtree(temp_dir, ignore_errors=True)
+        background_tasks.add_task(cleanup)
+        safe_name = os.path.basename(src_path).rsplit('.', 1)[0]
+        return StreamingResponse(iterfile(), media_type="video/mp4",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}_sticker.mp4"'})
+    except Exception as e:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.error(f"키프레임 합성 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"키프레임 합성 실패: {e}")
+
+# ── 객체 트래킹 ─────────────────────────────────────────────────────────────
+class TrackObjectRequest(BaseModel):
+    media_path: str
+    # 트래킹 시작 박스 (영상 %, 비디오 콘텐츠 기준)
+    box_x: float   # 0~100
+    box_y: float   # 0~100
+    box_w: float   # 0~100
+    box_h: float   # 0~100
+    start_time: float = 0.0
+    end_time: float = 0.0    # 0이면 영상 끝까지
+    interval: float = 1.0    # 키프레임 간격(초), 최소 0.2
+    track_mode: str = "face" # "face": 얼굴 추적, "generic": 일반 객체 추적
+
+
+def _detect_faces_mp(frame_rgb, face_det):
+    """MediaPipe Tasks API로 얼굴 바운딩박스 목록 반환 [(cx%, cy%, w%, h%), ...]"""
+    h_px, w_px = frame_rgb.shape[:2]
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame_rgb)
+    results = face_det.detect(mp_image)
+    boxes = []
+    if results.detections:
+        for det in results.detections:
+            bb = det.bounding_box
+            # Tasks API는 픽셀 단위 반환 → % 변환
+            cx = (bb.origin_x + bb.width / 2) / w_px * 100
+            cy = (bb.origin_y + bb.height / 2) / h_px * 100
+            boxes.append({
+                "cx": cx, "cy": cy,
+                "w": bb.width / w_px * 100,
+                "h": bb.height / h_px * 100,
+                "score": det.categories[0].score if det.categories else 0,
+            })
+    return boxes
+
+@app.post("/track-object")
+async def track_object(request: TrackObjectRequest):
+    """
+    OpenCV CSRT 트래커로 영상 내 객체를 추적하여 키프레임 좌표 반환.
+    블로킹 연산을 ThreadPoolExecutor로 분리하여 이벤트 루프 보호.
+    """
+    if cv2 is None:
+        raise HTTPException(status_code=500, detail="opencv-python 필요")
+
+    # 경로 해석: /uploads/xxx.mp4 → backend/uploads/xxx.mp4
+    rel = request.media_path.lstrip("/")
+    src_path = str(BASE_DIR / rel)
+    if not os.path.exists(src_path):
+        # 절대 경로로도 시도
+        if os.path.exists(request.media_path):
+            src_path = request.media_path
+        else:
+            raise HTTPException(status_code=404, detail=f"파일 없음: {src_path}")
+
+    import asyncio
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _do_track():
+        cap = cv2.VideoCapture(src_path)
+        if not cap.isOpened():
+            raise ValueError("영상 열기 실패")
+
+        # MediaPipe Tasks API 얼굴 감지 초기화 (face 모드)
+        face_det = None
+        if request.track_mode == "face" and mp is not None:
+            from mediapipe.tasks.python import vision as _mp_vision, BaseOptions as _MpBaseOptions
+            _model_path = str(BASE_DIR / "blaze_face_short_range.tflite")
+            if not os.path.exists(_model_path):
+                import urllib.request
+                _url = "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/latest/blaze_face_short_range.tflite"
+                urllib.request.urlretrieve(_url, _model_path)
+                logger.info(f"🔵 트래킹용 모델 다운로드: {_model_path}")
+            _det_opts = _mp_vision.FaceDetectorOptions(
+                base_options=_MpBaseOptions(model_asset_path=_model_path),
+                min_detection_confidence=0.5,
+            )
+            face_det = _mp_vision.FaceDetector.create_from_options(_det_opts)
+
+        try:
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30
+            total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            total_duration = total_frames / fps if total_frames > 0 else 60
+
+            start_t = max(0.0, request.start_time)
+            end_t = request.end_time if request.end_time > 0 else total_duration
+            end_t = min(end_t, total_duration)
+            ivl = max(0.2, request.interval)
+
+            start_frame = int(start_t * fps)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+            ret, first_frame = cap.read()
+            if not ret:
+                raise ValueError("첫 프레임 읽기 실패")
+
+            h, w = first_frame.shape[:2]
+
+            # 박스 중심 (% 단위) — 사용자가 선택한 위치
+            sel_cx = request.box_x + request.box_w / 2   # %
+            sel_cy = request.box_y + request.box_h / 2   # %
+
+            # ─── 모드별 초기화 ───────────────────────────────
+            if face_det is not None:
+                # 얼굴 감지 모드: 첫 프레임에서 선택 박스에 가장 가까운 얼굴 확인
+                first_rgb = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
+                faces_0 = _detect_faces_mp(first_rgb, face_det)
+                if not faces_0:
+                    raise ValueError(
+                        "첫 프레임에서 얼굴을 찾을 수 없습니다.\n"
+                        "'일반 객체 트래킹' 모드를 사용하거나 얼굴이 잘 보이는 프레임에서 시작하세요."
+                    )
+                # 선택 박스 중심에서 가장 가까운 얼굴
+                def face_dist(f):
+                    return ((f["cx"] - sel_cx) ** 2 + (f["cy"] - sel_cy) ** 2) ** 0.5
+                best = min(faces_0, key=face_dist)
+                last_cx, last_cy = best["cx"], best["cy"]
+                last_fw, last_fh = best["w"], best["h"]
+                logger.info(f"트래킹 시작: 얼굴 감지, cx={last_cx:.1f}% cy={last_cy:.1f}%")
+                use_face = True
+            else:
+                # 일반 객체 모드: TrackerMIL 사용
+                use_face = False
+                bx = max(0, int(request.box_x / 100 * w))
+                by = max(0, int(request.box_y / 100 * h))
+                bw = max(8, int(request.box_w / 100 * w))
+                bh = max(8, int(request.box_h / 100 * h))
+                bx, by = min(bx, w - bw), min(by, h - bh)
+                tracker = None
+                for fn in [
+                    lambda: cv2.TrackerCSRT_create(),
+                    lambda: cv2.legacy.TrackerCSRT_create(),
+                    lambda: cv2.TrackerMIL_create(),
+                    lambda: cv2.legacy.TrackerMIL_create(),
+                ]:
+                    try: tracker = fn(); break
+                    except (AttributeError, cv2.error): continue
+                if tracker is None:
+                    raise ValueError("OpenCV 트래커 없음 (opencv-contrib-python 설치 권장)")
+                tracker.init(first_frame, (bx, by, bw, bh))
+                last_cx = sel_cx
+                last_cy = sel_cy
+                last_fw = request.box_w
+                last_fh = request.box_h
+
+            # 첫 키프레임
+            sticker_x = round(max(0, min(90, last_cx - last_fw / 2)), 2)
+            sticker_y = round(max(0, min(90, last_cy - last_fh / 2)), 2)
+            keyframes = [{"time": round(start_t, 3), "x": sticker_x, "y": sticker_y}]
+            last_good = {"x": sticker_x, "y": sticker_y}
+
+            step_frames = max(1, int(ivl * fps))
+            cur_frame = start_frame + step_frames
+            end_frame = int(end_t * fps)
+            miss_count = 0
+            # 연속 miss 허용 한도: 최대 3초 분량
+            max_miss = max(3, int(3 / ivl))
+
+            while cur_frame <= end_frame:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, cur_frame)
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                t = round(min(cur_frame / fps, end_t), 3)
+
+                if use_face:
+                    # ── 얼굴 감지 모드 ──────────────────────────
+                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    faces = _detect_faces_mp(frame_rgb, face_det)
+
+                    if faces:
+                        # 직전 위치에서 가장 가까운 얼굴 선택 (다른 사람으로 넘어가지 않음)
+                        def dist_to_last(f):
+                            return ((f["cx"] - last_cx) ** 2 + (f["cy"] - last_cy) ** 2) ** 0.5
+                        best = min(faces, key=dist_to_last)
+                        d = dist_to_last(best)
+
+                        # 너무 멀리 점프하면 무시 (화면의 20% 이상 이동)
+                        if d < 25:
+                            last_cx, last_cy = best["cx"], best["cy"]
+                            last_fw, last_fh = best["w"], best["h"]
+                            sx = round(max(0, min(90, last_cx - last_fw / 2)), 2)
+                            sy = round(max(0, min(90, last_cy - last_fh / 2)), 2)
+                            keyframes.append({"time": t, "x": sx, "y": sy})
+                            last_good = {"x": sx, "y": sy}
+                            miss_count = 0
+                        else:
+                            # 위치 유지
+                            miss_count += 1
+                            keyframes.append({"time": t, **last_good})
+                    else:
+                        # 얼굴 없음 → 마지막 위치 유지
+                        miss_count += 1
+                        keyframes.append({"time": t, **last_good})
+
+                    if miss_count >= max_miss:
+                        logger.warning(f"t={t:.1f}s: 얼굴 감지 연속 실패 {miss_count}회, 추적 종료")
+                        break
+                else:
+                    # ── 일반 객체 트래킹 모드 ───────────────────
+                    success, box = tracker.update(frame)
+                    if success:
+                        tx, ty, tw, th = box
+                        cx = (tx + tw / 2) / w * 100
+                        cy = (ty + th / 2) / h * 100
+                        sx = round(max(0, min(90, cx - tw / w * 50)), 2)
+                        sy = round(max(0, min(90, cy - th / h * 50)), 2)
+                        keyframes.append({"time": t, "x": sx, "y": sy})
+                        last_good = {"x": sx, "y": sy}
+                        miss_count = 0
+                    else:
+                        miss_count += 1
+                        keyframes.append({"time": t, **last_good})
+                        if miss_count >= 5:
+                            break
+
+                cur_frame += step_frames
+
+            if keyframes and abs(keyframes[-1]["time"] - end_t) > 0.1:
+                keyframes.append({"time": round(end_t, 3), **last_good})
+
+            return {
+                "keyframes": keyframes,
+                "total": len(keyframes),
+                "mode": "face" if use_face else "generic",
+            }
+        finally:
+            cap.release()
+            if face_det is not None:
+                face_det.close()
+
+    try:
+        loop = asyncio.get_event_loop()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            result = await loop.run_in_executor(pool, _do_track)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        logger.error(f"트래킹 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"트래킹 실패: {e}")
 
 
 if __name__ == "__main__":

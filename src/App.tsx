@@ -865,6 +865,8 @@ function App() {
 
   const [showWhisperConfirm, setShowWhisperConfirm] = useState(false);
   // showWhisperConfirm: 자막 없는 영상에서 Whisper 사용 여부 확인 모달 표시 여부
+  const [forceWhisper, setForceWhisper] = useState(false);
+  // forceWhisper: 자막이 있어도 AI 음성인식(Whisper)으로 강제 추출
 
   const [includeTimestamps, setIncludeTimestamps] = useState(false);
   // includeTimestamps: TXT 저장 시 타임스탬프 포함 여부 (true: "[0:00] 텍스트" 형식)
@@ -1254,80 +1256,114 @@ function App() {
     }
   };
 
-  // ─── 자막 추출 공통 함수 ───────────────────────────────────────
+  // ─── 자막 추출 공통 함수 (SSE 스트리밍) ──────────────────────────
+  /** 이전 추출 요청을 취소하기 위한 AbortController ref */
+  const transcriptAbortRef = useRef<AbortController | null>(null);
+
   /**
    * fetchTranscript
-   *   - 백엔드 POST /transcribe 엔드포인트에 자막 추출을 요청
-   *   - YouTube 자막 API 우선 시도, 실패 시 use_whisper=true로 재요청 가능
-   *
-   * @param targetUrl  추출할 YouTube 영상의 전체 URL
-   * @param useWhisper true이면 Whisper STT를 사용하도록 백엔드에 지시
+   *   - 백엔드 POST /transcribe-stream 엔드포인트에 SSE로 자막 추출 요청
+   *   - 이전 요청이 있으면 자동으로 취소 (중복 실행 방지)
+   *   - 진행률(progress)과 상태 메시지(status)를 실시간으로 수신하여 UI에 반영
    */
   const fetchTranscript = async (targetUrl: string, useWhisper = false, lang?: string) => {
-    // lang이 명시적으로 전달되면 그것을 사용, 아니면 현재 selectedLang 상태값 사용
     const language = lang !== undefined ? lang : selectedLang;
+
+    // ── 이전 요청 취소 ──────────────────────────────────────────
+    if (transcriptAbortRef.current) {
+      transcriptAbortRef.current.abort();
+      console.log('⏹️ 이전 추출 요청 취소됨');
+    }
+    const abortController = new AbortController();
+    transcriptAbortRef.current = abortController;
+
     // 이전 상태 전부 초기화 (새 검색 시작)
     setLoading(true);
     setError('');
     setTranscript('');
     setSegments([]);
+    setTranscribeProgress(0);
+    setUploadProgress('');
     searchQueryRef.current = '';
     if (searchInputRef.current) searchInputRef.current.value = '';
     setSearchResults([]);
-    setLoopConfig(null);  // 새 영상 검색 시 구간반복 플레이어도 닫음
+    setLoopConfig(null);
+    setVideoId('');
 
     try {
-      // AbortController: 요청이 너무 길어지면 클라이언트 측에서 강제 취소
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 600000); // 10분 타임아웃
+      const response = await fetch('http://localhost:8000/transcribe-stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: targetUrl, use_whisper: useWhisper, language }),
+        signal: abortController.signal,  // 취소 시그널 연결
+      });
 
-      const response = await axios.post(
-        'http://localhost:8000/transcribe',
-        { url: targetUrl, use_whisper: useWhisper, language },
-        { signal: controller.signal, timeout: 600000 }
-      );
-
-      clearTimeout(timeoutId); // 정상 응답 받으면 타임아웃 취소
-      const data = response.data;
-
-      // 백엔드가 no_subtitle 상태를 반환한 경우
-      // → YouTube API 자막이 없고 use_whisper=false 였을 때
-      if (data.status === 'no_subtitle') {
-        setPendingUrl(targetUrl);        // 이후 Whisper 재요청을 위해 URL 보관
-        setShowWhisperConfirm(true);     // 사용자에게 Whisper 사용 여부 확인 모달 표시
-        return;
+      if (!response.ok) {
+        throw new Error(`서버 오류: ${response.status}`);
       }
 
-      // 정상 응답: 자막 데이터 저장
-      setTranscript(data.transcript);          // 전체 평문 자막
-      const fetchedSegs = data.segments || [];
-      setSegments(fetchedSegs);                // 타임스탬프 포함 세그먼트 배열
-      originalSegmentsRef.current = fetchedSegs; // 원본 보관
-      setVideoId(data.video_id || '');         // 영상 ID (링크/파일명에 사용)
-      console.log('✅ 추출 완료!', data.segments?.length, '개의 세그먼트');
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error('스트림을 읽을 수 없습니다.');
+
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const payload = JSON.parse(line.slice(6));
+            const { progress, status, result } = payload;
+
+            // 진행률 업데이트
+            if (typeof progress === 'number') setTranscribeProgress(progress);
+            if (status) setUploadProgress(status);
+
+            // 최종 결과 도착
+            if (result) {
+              if (result.error) {
+                setError(`❌ ${result.error}`);
+              } else if (result.status === 'no_subtitle') {
+                setPendingUrl(targetUrl);
+                setShowWhisperConfirm(true);
+              } else {
+                setTranscript(result.transcript);
+                const fetchedSegs = result.segments || [];
+                setSegments(fetchedSegs);
+                originalSegmentsRef.current = fetchedSegs;
+                setVideoId(result.video_id || '');
+                console.log('✅ 추출 완료!', fetchedSegs.length, '개의 세그먼트');
+              }
+            }
+          } catch {
+            // JSON 파싱 실패 — 무시
+          }
+        }
+      }
 
     } catch (err: any) {
-      // 에러 타입별 사용자 친화적 메시지 분기
+      // AbortError는 새 요청으로 인해 이전 요청이 취소된 것이므로 무시
+      if (err.name === 'AbortError') {
+        console.log('⏹️ 이전 추출 요청이 취소되었습니다.');
+        return;
+      }
       console.error('❌ 추출 실패:', err);
       let errorMessage = '대사를 추출하는 중 오류가 발생했습니다.';
-
-      if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
-        // 요청이 타임아웃으로 취소된 경우
-        errorMessage = '⏱️ 처리 시간이 너무 오래 걸립니다. 더 짧은 영상으로 시도해주세요.';
-      } else if (err.response?.status === 500) {
-        // 백엔드 내부 서버 오류
-        errorMessage = `🔧 서버 오류: ${err.response?.data?.detail || '백엔드 처리 중 문제가 발생했습니다.'}`;
-      } else if (err.response?.status === 400) {
-        // 잘못된 URL 등 클라이언트 측 요청 오류
-        errorMessage = `❌ 잘못된 요청: ${err.response?.data?.detail || '올바른 YouTube URL을 입력해주세요.'}`;
-      } else if (!err.response) {
-        // 백엔드 서버 자체에 연결할 수 없는 경우 (서버 미실행 등)
+      if (err.message?.includes('Failed to fetch') || err.message?.includes('NetworkError')) {
         errorMessage = '🔌 백엔드 서버에 연결할 수 없습니다. 서버가 실행 중인지 확인해주세요.';
       }
       setError(errorMessage);
     } finally {
-      // 성공/실패 관계없이 로딩 상태 해제
       setLoading(false);
+      setTranscribeProgress(0);
+      setUploadProgress('');
     }
   };
 
@@ -1477,11 +1513,24 @@ function App() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!url) return;
-    // 만약 언어 목록이 아직 세팅 안 될 상태라면 언어 먼저 조회 후 추출
-    if (!langLoading && availableLangs.length === 0 && !langError && YT_URL_RE.test(url)) {
-      await fetchLanguages(url);
+
+    // YouTube URL → 언어 목록 로드 (검색 단계)
+    if (YT_URL_RE.test(url)) {
+      if (!langLoading && (availableLangs.length === 0 || langError)) {
+        await fetchLanguages(url);
+      }
+      // 언어/옵션 패널이 표시되면 여기서 중지 — 사용자가 "추출하기" 버튼으로 시작
+      return;
     }
-    fetchTranscript(url);
+
+    // YouTube URL이 아닌 경우 바로 추출
+    fetchTranscript(url, forceWhisper);
+  };
+
+  /** 별도의 "추출하기" 버튼 핸들러 — 언어/옵션 확인 후 실제 추출 시작 */
+  const handleExtract = () => {
+    if (!url || loading) return;
+    fetchTranscript(url, forceWhisper);
   };
 
   // ─── 언어 변경 시 자동 재추출 ──────────────────────────────────
@@ -3317,10 +3366,10 @@ function App() {
                   }}
                   disabled={loading}
                 />
-                <button type="submit" className="btn-extract" disabled={loading || !url}>
-                  {loading
-                    ? <><Loader2 style={{ width: 13, height: 13, animation: 'spin 0.8s linear infinite' }} /> 추출 중</>
-                    : <><Send style={{ width: 13, height: 13 }} /> 추출하기</>
+                <button type="submit" className="btn-extract" disabled={loading || !url || langLoading}>
+                  {langLoading
+                    ? <><Loader2 style={{ width: 13, height: 13, animation: 'spin 0.8s linear infinite' }} /> 검색 중</>
+                    : <><Send style={{ width: 13, height: 13 }} /> 검색</>
                   }
                 </button>
               </div>
@@ -3346,13 +3395,14 @@ function App() {
                       <span className="status-chip warn">⚠ 자막 없음 — AI 추출 가능</span>
                     </div>
                   ) : (
+                    <>
                     <div className="lang-row">
                       <span className="lang-row-label">🌐 언어</span>
                       <select
                         className="lang-select"
                         value={selectedLang}
                         onChange={(e) => handleLangChange(e.target.value)}
-                        disabled={loading}
+                        disabled={loading || forceWhisper}
                       >
                         <option value="">자동 선택 (권장)</option>
                         {availableLangs.some(l => !l.is_generated) && <option disabled>── 수동 자막 ──</option>}
@@ -3364,17 +3414,68 @@ function App() {
                           <option key={`auto-${l.code}`} value={l.code}>{l.label}</option>
                         ))}
                       </select>
-                      {selectedLang && (
-                        <span className="status-chip info">
-                          {availableLangs.find(l => l.code === selectedLang)?.name ?? selectedLang}
-                        </span>
-                      )}
+                      {/* 자막 유형 요약 칩 */}
+                      {(() => {
+                        const manualCount = availableLangs.filter(l => !l.is_generated).length;
+                        const autoCount = availableLangs.filter(l => l.is_generated).length;
+                        return (
+                          <>
+                            {manualCount > 0 && <span className="status-chip info" title="사람이 직접 작성한 자막">✍️ 수동 {manualCount}개</span>}
+                            {autoCount > 0 && <span className="status-chip warn" title="YouTube 자동 음성인식으로 생성된 자막">🤖 자동생성 {autoCount}개</span>}
+                          </>
+                        );
+                      })()}
                     </div>
-                  )}
+                    {/* AI 음성인식 강제 사용 체크박스 */}
+                    <label className="lang-row" style={{ cursor: 'pointer', gap: '0.4rem', padding: '0.3rem 0.25rem 0' }}>
+                      <input
+                        type="checkbox"
+                        checked={forceWhisper}
+                        onChange={(e) => setForceWhisper(e.target.checked)}
+                        disabled={loading}
+                        style={{ accentColor: 'var(--brand)', cursor: 'pointer' }}
+                      />
+                      <span style={{ fontSize: '0.82rem', color: forceWhisper ? 'var(--brand-light)' : 'var(--text-muted)' }}>
+                        🎙️ AI 음성인식(Whisper)으로 추출 {forceWhisper && <span style={{ color: 'var(--warning)', fontSize: '0.75rem' }}>— 영상 다운로드 필요, 수 분 소요</span>}
+                      </span>
+                    </label>
+                    </>)}
                 </motion.div>
               )}
             </AnimatePresence>
           </div>
+
+          {/* ── 추출하기 버튼 (검색 후 표시) ── */}
+          <AnimatePresence>
+            {(availableLangs.length > 0 || langError) && !loading && (
+              <motion.div
+                key="extract-btn"
+                initial={{ opacity: 0, y: -4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -4 }}
+                transition={{ duration: 0.2 }}
+                style={{ padding: '0.3rem 0' }}
+              >
+                <button
+                  className="btn-extract"
+                  onClick={handleExtract}
+                  disabled={loading}
+                  style={{ width: '100%', padding: '0.55rem 1rem', fontSize: '0.88rem', fontWeight: 600 }}
+                >
+                  {forceWhisper
+                    ? <>🎙️ AI 음성인식으로 추출하기</>
+                    : <><Send style={{ width: 13, height: 13 }} /> 추출하기</>
+                  }
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+          {loading && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.25rem' }}>
+              <Loader2 style={{ width: 14, height: 14, color: 'var(--brand-light)', animation: 'spin 0.8s linear infinite' }} />
+              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>추출 중...</span>
+            </div>
+          )}
 
           {/* ── 로컬 파일 업로드 (첫 화면에서만) ── */}
           {!hasResult && !loading && (

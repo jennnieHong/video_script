@@ -2,6 +2,7 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 from youtube_transcript_api import YouTubeTranscriptApi
 import yt_dlp
@@ -111,9 +112,46 @@ def get_language_name(code: str) -> str:
     return code  # 매핑 없으면 코드 원본 반환
 
 def extract_video_id(url):
+    """URL에서 v= 파라미터의 영상 ID를 추출 (빠른 정규식 파싱, 네트워크 호출 없음)"""
     pattern = r'(?:v=|\/)([0-9A-Za-z_-]{11}).*'
     match = re.search(pattern, url)
     return match.group(1) if match else None
+
+def resolve_playlist_video_id(url):
+    """
+    플레이리스트 URL(list= + index=)인 경우 yt-dlp subprocess로 해당 인덱스의 실제 영상 ID를 해석.
+    subprocess에 10초 타임아웃을 걸어 서버가 멈추거나 좀비 프로세스가 남는 것을 방지.
+    """
+    from urllib.parse import urlparse, parse_qs
+
+    parsed = urlparse(url)
+    params = parse_qs(parsed.query)
+
+    if 'list' in params and 'index' in params:
+        try:
+            playlist_id = params['list'][0]
+            index = int(params['index'][0])  # 1-based
+            playlist_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+            # yt-dlp를 subprocess로 실행 — 서버 프로세스를 블로킹하지 않음
+            cmd = [
+                'yt-dlp', '--flat-playlist', '--dump-json',
+                '--playlist-items', str(index),
+                '--quiet', '--no-warnings',
+                playlist_url,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode == 0 and result.stdout.strip():
+                entry = json.loads(result.stdout.strip().split('\n')[0])
+                resolved_id = entry.get('id')
+                if resolved_id:
+                    logger.info(f"🎵 플레이리스트 index={index} → video_id={resolved_id}")
+                    return resolved_id
+        except subprocess.TimeoutExpired:
+            logger.warning("⚠️ 플레이리스트 해석 타임아웃 (10초), v= 폴백")
+        except Exception as e:
+            logger.warning(f"⚠️ 플레이리스트 해석 실패, v= 폴백: {e}")
+
+    return extract_video_id(url)
 
 # ─── 요청 모델 ──────────────────────────────────────────────────────
 
@@ -170,7 +208,7 @@ async def get_languages(request: LanguagesRequest):
 
 @app.post("/transcribe")
 async def transcribe(request: TranscribeRequest):
-    video_id = extract_video_id(request.url)
+    video_id = await asyncio.to_thread(resolve_playlist_video_id, request.url)
     if not video_id:
         raise HTTPException(status_code=400, detail="유효한 유튜브 URL이 아닙니다.")
 
@@ -248,6 +286,7 @@ async def transcribe(request: TranscribeRequest):
                 }],
                 'outtmpl': audio_path,
                 'quiet': False,
+                'noplaylist': True,  # 플레이리스트 URL이어도 단일 영상만 다운로드
                 'ffmpeg_location': os.path.dirname(FFMPEG_PATH),
             }
 
@@ -285,6 +324,200 @@ async def transcribe(request: TranscribeRequest):
     except Exception as e:
         logger.error(f"❌ Whisper 실패: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"대사 추출에 실패했습니다: {str(e)}")
+
+
+# ─── SSE 스트리밍 자막 추출 엔드포인트 ────────────────────────────
+@app.post("/transcribe-stream")
+async def transcribe_stream(request: TranscribeRequest):
+    """
+    /transcribe와 동일한 로직이지만 SSE(Server-Sent Events)로 진행 상황을 실시간 전송.
+    클라이언트가 연결을 끊으면 (새 요청 등) cancelled 플래그로 작업 중단.
+    """
+    import asyncio
+    import threading
+
+    cancelled = threading.Event()  # 클라이언트 disconnect 시 set()
+
+    async def event_generator():
+        def send_progress(pct: int, status: str, result=None):
+            payload = {"progress": pct, "status": status}
+            if result is not None:
+                payload["result"] = result
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        class ClientDisconnected(Exception):
+            pass
+
+        def check_cancelled():
+            if cancelled.is_set():
+                raise ClientDisconnected()
+
+        try:
+            # ─── 1단계: 플레이리스트 해석 ───────────────────────────
+            yield send_progress(5, "영상 정보 확인 중...")
+            try:
+                video_id = await asyncio.to_thread(resolve_playlist_video_id, request.url)
+            except ClientDisconnected:
+                return
+            except Exception:
+                video_id = extract_video_id(request.url)
+
+            if not video_id:
+                yield send_progress(100, "오류: 유효한 YouTube URL이 아닙니다.", {"error": "유효한 유튜브 URL이 아닙니다."})
+                return
+
+            yield send_progress(15, f"영상 ID: {video_id}")
+            check_cancelled()
+
+            # ─── 2단계: YouTube 자막 API 시도 ──────────────────────
+            if not request.use_whisper:
+                yield send_progress(20, "YouTube 자막 검색 중...")
+                try:
+                    api = YouTubeTranscriptApi()
+                    transcript_data = None
+                    used_language = None
+
+                    if request.language:
+                        try:
+                            yield send_progress(30, f"'{request.language}' 언어 자막 검색 중...")
+                            transcript_data = await asyncio.to_thread(
+                                api.fetch, video_id, languages=[request.language]
+                            )
+                            used_language = [request.language]
+                        except ClientDisconnected:
+                            return
+                        except Exception:
+                            yield send_progress(35, f"'{request.language}' 자막 없음, 다른 언어 시도...")
+
+                    if transcript_data is None:
+                        for i, lang in enumerate([['ko'], ['en'], ['ko', 'en']]):
+                            check_cancelled()
+                            try:
+                                yield send_progress(40 + i * 5, f"{'/'.join(lang)} 자막 검색 중...")
+                                transcript_data = await asyncio.to_thread(
+                                    api.fetch, video_id, languages=lang
+                                )
+                                used_language = lang
+                                break
+                            except ClientDisconnected:
+                                return
+                            except Exception:
+                                continue
+
+                    if transcript_data is None:
+                        check_cancelled()
+                        yield send_progress(55, "모든 언어로 자막 검색 중...")
+                        transcript_data = await asyncio.to_thread(api.fetch, video_id)
+                        used_language = ['auto']
+
+                    yield send_progress(70, "자막 데이터 처리 중...")
+                    segments = [{
+                        "start": snippet.start,
+                        "duration": snippet.duration,
+                        "text": snippet.text
+                    } for snippet in transcript_data]
+
+                    transcript_text = " ".join(s["text"] for s in segments)
+                    yield send_progress(90, f"✅ {len(segments)}개 자막 세그먼트 추출 완료!")
+
+                    result = {
+                        "transcript": transcript_text,
+                        "segments": segments,
+                        "video_id": video_id,
+                        "method": "api",
+                        "language": used_language[0] if used_language else "unknown",
+                    }
+                    yield send_progress(100, "완료!", result)
+                    return
+
+                except ClientDisconnected:
+                    return
+                except Exception as e:
+                    logger.warning(f"⚠️ YouTube 자막 API 실패: {e}")
+                    yield send_progress(60, "YouTube 자막을 찾을 수 없습니다.")
+                    yield send_progress(100, "자막 없음", {
+                        "status": "no_subtitle",
+                        "video_id": video_id,
+                        "message": "이 영상에는 자막이 없습니다. AI 음성인식(Whisper)으로 추출할 수 있습니다."
+                    })
+                    return
+
+            # ─── 3단계: Whisper STT ────────────────────────────────
+            check_cancelled()
+            try:
+                yield send_progress(10, "Whisper 음성인식 준비 중...")
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    audio_path = os.path.join(temp_dir, "audio")
+
+                    ydl_opts = {
+                        'format': 'bestaudio/best',
+                        'postprocessors': [{
+                            'key': 'FFmpegExtractAudio',
+                            'preferredcodec': 'mp3',
+                            'preferredquality': '192',
+                        }],
+                        'outtmpl': audio_path,
+                        'quiet': True,
+                        'noplaylist': True,
+                        'ffmpeg_location': os.path.dirname(FFMPEG_PATH),
+                    }
+
+                    yield send_progress(15, "오디오 다운로드 중...")
+                    await asyncio.to_thread(lambda: yt_dlp.YoutubeDL(ydl_opts).download([request.url]))
+
+                    actual_audio_path = audio_path + ".mp3"
+                    if not os.path.exists(actual_audio_path):
+                        if os.path.exists(audio_path):
+                            actual_audio_path = audio_path
+                        else:
+                            yield send_progress(100, "오류", {"error": "오디오 다운로드 실패"})
+                            return
+
+                    check_cancelled()
+                    yield send_progress(40, "오디오 다운로드 완료! Whisper 모델 로딩 중...")
+                    model = await asyncio.to_thread(whisper.load_model, "base")
+
+                    check_cancelled()
+                    yield send_progress(50, "AI 음성인식 전사 중... (수 분 소요)")
+                    result = await asyncio.to_thread(model.transcribe, actual_audio_path)
+
+                    yield send_progress(90, "전사 결과 처리 중...")
+                    segments = [{
+                        "start": seg['start'],
+                        "duration": seg['end'] - seg['start'],
+                        "text": seg['text']
+                    } for seg in result.get("segments", [])]
+
+                    yield send_progress(95, f"✅ {len(segments)}개 세그먼트 전사 완료!")
+                    final_result = {
+                        "transcript": result["text"],
+                        "segments": segments,
+                        "video_id": video_id,
+                        "method": "whisper",
+                        "language": result.get("language", "unknown"),
+                    }
+                    yield send_progress(100, "완료!", final_result)
+
+            except ClientDisconnected:
+                return
+            except Exception as e:
+                logger.error(f"❌ Whisper 실패: {e}", exc_info=True)
+                yield send_progress(100, "오류", {"error": f"대사 추출 실패: {str(e)}"})
+
+        except ClientDisconnected:
+            logger.info("⏹️ 클라이언트 연결 종료 — 작업 중단")
+            return
+
+    async def on_disconnect():
+        cancelled.set()
+        logger.info("⏹️ 클라이언트 연결 종료 — 작업 취소 플래그 설정")
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        background=BackgroundTask(lambda: cancelled.set()),
+    )
 
 
 # ─── 클립 다운로드 엔드포인트 ────────────────────────────────────

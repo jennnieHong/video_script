@@ -1385,6 +1385,18 @@ function App() {
     }
   };
 
+  /** 추출 작업 명시적 취소 */
+  const cancelExtraction = () => {
+    if (transcriptAbortRef.current) {
+      transcriptAbortRef.current.abort();
+      transcriptAbortRef.current = null;
+    }
+    setLoading(false);
+    setTranscribeProgress(0);
+    setUploadProgress('');
+    console.log('⏹️ 사용자가 추출을 취소했습니다.');
+  };
+
   // ─── 로컬 파일 업로드 핸들러 (SSE 스트리밍 진행률) ──────────────
   const handleLocalFileUpload = async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase() || '';
@@ -3491,7 +3503,22 @@ function App() {
           {loading && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.5rem 0.25rem' }}>
               <Loader2 style={{ width: 14, height: 14, color: 'var(--brand-light)', animation: 'spin 0.8s linear infinite' }} />
-              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>추출 중...</span>
+              <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)', flex: 1 }}>추출 중...</span>
+              <button
+                onClick={cancelExtraction}
+                style={{
+                  padding: '0.2rem 0.5rem',
+                  fontSize: '0.75rem',
+                  color: 'var(--text-muted)',
+                  background: 'transparent',
+                  border: '1px solid var(--border)',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                }}
+                title="추출 취소"
+              >
+                ✕
+              </button>
             </div>
           )}
 
@@ -3962,6 +3989,24 @@ function App() {
                   </p>
                 </>
               )}
+              <button
+                onClick={cancelExtraction}
+                style={{
+                  marginTop: '1rem',
+                  padding: '0.4rem 1.2rem',
+                  fontSize: '0.8rem',
+                  color: 'var(--text-muted)',
+                  background: 'transparent',
+                  border: '1px solid var(--border)',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s',
+                }}
+                onMouseEnter={e => { e.currentTarget.style.borderColor = 'var(--danger)'; e.currentTarget.style.color = 'var(--danger)'; }}
+                onMouseLeave={e => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)'; }}
+              >
+                ✕ 취소
+              </button>
             </div>
           )}
 

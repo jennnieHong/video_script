@@ -366,7 +366,8 @@ async def transcribe_stream(request: TranscribeRequest):
                 yield send_progress(100, "오류: 유효한 YouTube URL이 아닙니다.", {"error": "유효한 유튜브 URL이 아닙니다."})
                 return
 
-            yield send_progress(15, f"영상 ID: {video_id}")
+            # 🎬 video_id 확인 즉시 전송 → 프론트에서 영상 재생 시작
+            yield send_progress(15, f"영상 준비 완료", {"video_id": video_id})
             check_cancelled()
 
             # ─── 2단계: YouTube 자막 API 시도 ──────────────────────
@@ -417,17 +418,25 @@ async def transcribe_stream(request: TranscribeRequest):
                         "text": snippet.text
                     } for snippet in transcript_data]
 
-                    transcript_text = " ".join(s["text"] for s in segments)
-                    yield send_progress(90, f"✅ {len(segments)}개 자막 세그먼트 추출 완료!")
+                    # 📝 세그먼트를 청크 단위(50개)로 순차 전송
+                    CHUNK_SIZE = 50
+                    total = len(segments)
+                    for ci in range(0, total, CHUNK_SIZE):
+                        chunk = segments[ci:ci + CHUNK_SIZE]
+                        pct = 70 + int((ci + len(chunk)) / total * 25)  # 70~95%
+                        yield send_progress(pct, f"자막 로드 중... ({min(ci + CHUNK_SIZE, total)}/{total})", {
+                            "segments_chunk": chunk
+                        })
+                        check_cancelled()
 
-                    result = {
+                    transcript_text = " ".join(s["text"] for s in segments)
+                    yield send_progress(100, "완료!", {
                         "transcript": transcript_text,
-                        "segments": segments,
                         "video_id": video_id,
                         "method": "api",
                         "language": used_language[0] if used_language else "unknown",
-                    }
-                    yield send_progress(100, "완료!", result)
+                        "done": True,
+                    })
                     return
 
                 except ClientDisconnected:
@@ -481,22 +490,31 @@ async def transcribe_stream(request: TranscribeRequest):
                     yield send_progress(50, "AI 음성인식 전사 중... (수 분 소요)")
                     result = await asyncio.to_thread(model.transcribe, actual_audio_path)
 
-                    yield send_progress(90, "전사 결과 처리 중...")
+                    yield send_progress(85, "전사 결과 처리 중...")
                     segments = [{
                         "start": seg['start'],
                         "duration": seg['end'] - seg['start'],
                         "text": seg['text']
                     } for seg in result.get("segments", [])]
 
-                    yield send_progress(95, f"✅ {len(segments)}개 세그먼트 전사 완료!")
-                    final_result = {
+                    # 📝 세그먼트를 청크 단위(50개)로 순차 전송
+                    CHUNK_SIZE = 50
+                    total = len(segments)
+                    for ci in range(0, total, CHUNK_SIZE):
+                        chunk = segments[ci:ci + CHUNK_SIZE]
+                        pct = 85 + int((ci + len(chunk)) / total * 12)  # 85~97%
+                        yield send_progress(pct, f"자막 로드 중... ({min(ci + CHUNK_SIZE, total)}/{total})", {
+                            "segments_chunk": chunk
+                        })
+                        check_cancelled()
+
+                    yield send_progress(100, "완료!", {
                         "transcript": result["text"],
-                        "segments": segments,
                         "video_id": video_id,
                         "method": "whisper",
                         "language": result.get("language", "unknown"),
-                    }
-                    yield send_progress(100, "완료!", final_result)
+                        "done": True,
+                    })
 
             except ClientDisconnected:
                 return

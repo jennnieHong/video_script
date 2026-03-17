@@ -1308,6 +1308,9 @@ function App() {
       const decoder = new TextDecoder();
       let buffer = '';
 
+      // 세그먼트를 청크 단위로 누적할 로컬 배열
+      const accumulatedSegs: typeof segments = [];
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -1326,20 +1329,35 @@ function App() {
             if (typeof progress === 'number') setTranscribeProgress(progress);
             if (status) setUploadProgress(status);
 
-            // 최종 결과 도착
             if (result) {
+              // 🎬 video_id 수신 → 즉시 영상 재생 시작
+              if (result.video_id && !result.done && !result.error && !result.status) {
+                setVideoId(result.video_id);
+              }
+
+              // 📝 세그먼트 청크 수신 → 자막을 순차적으로 화면에 추가
+              if (result.segments_chunk) {
+                accumulatedSegs.push(...result.segments_chunk);
+                setSegments([...accumulatedSegs]);
+                originalSegmentsRef.current = [...accumulatedSegs];
+              }
+
+              // ❌ 에러
               if (result.error) {
                 setError(`❌ ${result.error}`);
-              } else if (result.status === 'no_subtitle') {
+              }
+
+              // ⚠️ 자막 없음 → Whisper 확인 모달
+              if (result.status === 'no_subtitle') {
                 setPendingUrl(targetUrl);
                 setShowWhisperConfirm(true);
-              } else {
-                setTranscript(result.transcript);
-                const fetchedSegs = result.segments || [];
-                setSegments(fetchedSegs);
-                originalSegmentsRef.current = fetchedSegs;
-                setVideoId(result.video_id || '');
-                console.log('✅ 추출 완료!', fetchedSegs.length, '개의 세그먼트');
+              }
+
+              // ✅ 완료 → transcript 저장
+              if (result.done) {
+                setTranscript(result.transcript || '');
+                if (result.video_id) setVideoId(result.video_id);
+                console.log('✅ 추출 완료!', accumulatedSegs.length, '개의 세그먼트');
               }
             }
           } catch {
@@ -3273,7 +3291,7 @@ function App() {
   // ================================================================
   // JSX 렌더링
   // ================================================================
-  const hasResult = !!transcript;
+  const hasResult = !!transcript || segments.length > 0;
 
   return (
     <div className="app-shell">
@@ -3915,8 +3933,8 @@ function App() {
         {/* ══ 우측 패널: 결과 ════════════════════════════════════ */}
         <main className="right-panel">
 
-          {/* 로딩 */}
-          {loading && (
+          {/* 로딩 (세그먼트가 아직 도착하지 않은 경우에만 표시) */}
+          {loading && segments.length === 0 && (
             <div className="loading-state">
               {transcribeProgress > 0 ? (
                 <>

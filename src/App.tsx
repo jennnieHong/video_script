@@ -951,11 +951,15 @@ function App() {
   const [trackingOffset, setTrackingOffset] = useState(0.3);             // 트래킹 싱크 오프셋 (초, 기본값 0.3s 빠르게)
   const [timestampPrecision, setTimestampPrecision] = useState(0);       // 타임스탬프 정밀도 (0:초, 1:0.1s, 2:0.01s, 3:ms)
   const [isSeekMode, setIsSeekMode] = useState(false);                  // 지점 재생 모드: 세그먼트 클릭 시 해당 위치부터 자유 재생 (ON 시 구간 재생 비활성)
+  const [isMultiSeekMode, setIsMultiSeekMode] = useState(false);        // 다중 지점 모드: 클릭 시 핀 추가/재생
+  const [seekPins, setSeekPins] = useState<{ segIdx: number; time: number; label: string }[]>([]); // 핀 목록
   const isDragModeRef = useRef(false);                                  // isDragMode 동기 참조 (드래그 핸들러 내에서 즉시 확인)
   const isSeekModeRef = useRef(false);                                  // isSeekMode 동기 참조 (클릭 핸들러 내에서 모드 분기)
+  const isMultiSeekModeRef = useRef(false);                             // isMultiSeekMode 동기 참조
   // ref ↔ state 동기화: 렌더마다 ref를 최신 state로 갱신
   isDragModeRef.current = isDragMode;
   isSeekModeRef.current = isSeekMode;
+  isMultiSeekModeRef.current = isMultiSeekMode;
   const [playCtrlOpen, setPlayCtrlOpen] = useState(true);              // 재생 컨트롤 접이식 열림 상태
   const [showTranslation, setShowTranslation] = useState(false);         // 발음 자막 편집 패널 표시
   const [translations, setTranslations] = useState<Record<number, string>>({}); // 세그먼트별 발음 텍스트
@@ -1287,8 +1291,17 @@ function App() {
     searchQueryRef.current = '';
     if (searchInputRef.current) searchInputRef.current.value = '';
     setSearchResults([]);
-    setLoopConfig(null);
     setVideoId('');
+    // 재생 관련 state 전부 리셋
+    setLoopConfig(null);
+    setIsSeekMode(false);
+    setIsMultiSeekMode(false);
+    setSeekPins([]);
+    setIsDragMode(false);
+    setIsMultiRangeMode(false);
+    setMultiRanges([]);
+    setCheckedSegs(new Set());
+    isPlayAllRef.current = false;
 
     try {
       const response = await fetch('http://localhost:8000/transcribe-stream', {
@@ -3868,16 +3881,112 @@ function App() {
               <AnimatePresence>
               {playCtrlOpen && (
                 <motion.div key="play-ctrl-body" initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => { const next = !isSeekMode; setIsSeekMode(next); if (next) { rangeClickRef.current = null; clearRangePins(); setIsDragMode(false); } }}>
+              <div className={`mode-toggle-bar ${isSeekMode ? 'active' : ''}`} onClick={() => { const next = !isSeekMode; setIsSeekMode(next); if (next) { rangeClickRef.current = null; clearRangePins(); setIsDragMode(false); } else { setIsMultiSeekMode(false); setSeekPins([]); } }}>
                 <div className="mode-toggle-info">
                   <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg></span>
                   <div className="mode-toggle-texts"><span className="mode-toggle-title">지점 재생</span><span className="mode-toggle-desc">해당 위치부터 재생</span></div>
                 </div>
                 <div className="toggle">
-                  <input type="checkbox" checked={isSeekMode} onChange={(e) => { e.stopPropagation(); const next = e.target.checked; setIsSeekMode(next); if (next) { rangeClickRef.current = null; clearRangePins(); setIsDragMode(false); } }} />
+                  <input type="checkbox" checked={isSeekMode} onChange={(e) => { e.stopPropagation(); const next = e.target.checked; setIsSeekMode(next); if (next) { rangeClickRef.current = null; clearRangePins(); setIsDragMode(false); } else { setIsMultiSeekMode(false); setSeekPins([]); } }} />
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>
+
+              {/* ── 다중 지점 모드 (지점 재생 ON일 때만) ── */}
+              <AnimatePresence>
+                {isSeekMode && (
+                  <motion.div
+                    key="multi-seek"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    style={{ overflow: 'hidden' }}
+                  >
+                    <div
+                      className={`mode-toggle-bar ${isMultiSeekMode ? 'active' : ''}`}
+                      style={{ marginLeft: '1.2rem', borderLeft: '2px solid var(--brand)', paddingLeft: '0.6rem' }}
+                      onClick={() => { setIsMultiSeekMode(v => !v); }}
+                    >
+                      <div className="mode-toggle-info">
+                        <span className="mode-toggle-icon">📌</span>
+                        <div className="mode-toggle-texts">
+                          <span className="mode-toggle-title">다중 지점 모드</span>
+                          <span className="mode-toggle-desc">{isMultiSeekMode ? '클릭으로 핀 추가/제거' : '핀을 꽂아 빠르게 이동'}</span>
+                        </div>
+                      </div>
+                      <div className="toggle">
+                        <input type="checkbox" checked={isMultiSeekMode} onChange={(e) => { e.stopPropagation(); setIsMultiSeekMode(e.target.checked); }} />
+                        <div className="toggle-track" /><div className="toggle-thumb" />
+                      </div>
+                    </div>
+
+                    {/* 핀 목록 */}
+                    <AnimatePresence>
+                      {isMultiSeekMode && seekPins.length > 0 && (
+                        <motion.div
+                          key="pin-list"
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          style={{ overflow: 'hidden', marginLeft: '1.2rem', borderLeft: '2px solid var(--border)', paddingLeft: '0.6rem', marginTop: '0.3rem' }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.3rem' }}>
+                            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>📌 {seekPins.length}개 핀</span>
+                            <button
+                              onClick={() => setSeekPins([])}
+                              style={{
+                                fontSize: '0.7rem', color: 'var(--text-muted)', background: 'transparent',
+                                border: '1px solid var(--border)', borderRadius: '4px', padding: '0.15rem 0.4rem',
+                                cursor: 'pointer',
+                              }}
+                            >
+                              전체 삭제
+                            </button>
+                          </div>
+                          {seekPins.map((pin, pi) => (
+                            <div
+                              key={`pin-${pin.segIdx}`}
+                              style={{
+                                display: 'flex', alignItems: 'center', gap: '0.4rem',
+                                padding: '0.25rem 0.3rem', borderRadius: '4px', cursor: 'pointer',
+                                fontSize: '0.8rem', transition: 'background 0.15s',
+                              }}
+                              onMouseEnter={e => { e.currentTarget.style.background = 'var(--bg-hover)'; }}
+                              onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                              onClick={() => seekAndPlay(pin.time)}
+                            >
+                              <span style={{ color: 'var(--brand-light)', fontWeight: 600, fontSize: '0.75rem', flexShrink: 0 }}>
+                                {formatTimestamp(pin.time)}
+                              </span>
+                              <span style={{ color: 'var(--text-secondary)', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '0.78rem' }}>
+                                {pin.label}{pin.label.length >= 30 ? '...' : ''}
+                              </span>
+                              <button
+                                onClick={(e) => { e.stopPropagation(); setSeekPins(prev => prev.filter((_, idx) => idx !== pi)); }}
+                                style={{
+                                  flexShrink: 0, width: '18px', height: '18px', borderRadius: '50%',
+                                  background: 'transparent', border: '1px solid var(--border)',
+                                  color: 'var(--text-muted)', fontSize: '0.65rem', cursor: 'pointer',
+                                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                }}
+                                title="핀 제거"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          ))}
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+
+                    {isMultiSeekMode && seekPins.length === 0 && (
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginLeft: '1.2rem', paddingLeft: '0.6rem', marginTop: '0.3rem' }}>
+                        대본에서 세그먼트를 클릭하면 핀이 추가됩니다
+                      </p>
+                    )}
+                  </motion.div>
+                )}
+              </AnimatePresence>
               <div className={`mode-toggle-bar ${isDragMode ? 'active' : ''}${isSeekMode ? ' disabled' : ''}`} onClick={() => { if (isSeekMode) return; setIsDragMode(v => { if (v) { rangeClickRef.current = null; } return !v; }); }} style={isSeekMode ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
                 <div className="mode-toggle-info">
                   <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M15 18l-2 2-2-2"/><path d="M15 6l-2-2-2 2"/><path d="M18 15l2-2-2-2"/><path d="M6 15l-2-2 2-2"/></svg></span>
@@ -6130,6 +6239,19 @@ function App() {
                           onMouseEnter={() => { if (!isSeekModeRef.current) handleDragEnter(i); }}
                           onClick={() => {
                             if (!isSeekModeRef.current) return;
+                            // 다중 지점 모드: 핀 추가/토글 + 재생
+                            if (isMultiSeekModeRef.current) {
+                              setSeekPins(prev => {
+                                const exists = prev.findIndex(p => p.segIdx === i);
+                                if (exists >= 0) {
+                                  // 이미 있으면 제거
+                                  return prev.filter((_, idx) => idx !== exists);
+                                }
+                                // 없으면 추가 (시간 순 정렬)
+                                const newPin = { segIdx: i, time: seg.start, label: seg.text.slice(0, 30) };
+                                return [...prev, newPin].sort((a, b) => a.time - b.time);
+                              });
+                            }
                             setLoopConfig(null);
                             setReEnableTrigger(v => v + 1);
                             seekAndPlay(seg.start);
@@ -6145,6 +6267,7 @@ function App() {
                             onClick={(e) => { if (isSeekModeRef.current) e.stopPropagation(); openYouTubeAtTime(i, seg.start); }}
                             title={loopMode ? '클릭 → 이 세그먼트 재생' : '클릭 → YouTube에서 열기'}
                           >
+                            {seekPins.some(p => p.segIdx === i) && <span style={{ marginRight: '2px', fontSize: '0.65rem' }}>📌</span>}
                             {formatTimestamp(seg.start)}<span className="seg-time-sep">~</span>{formatTimestamp(seg.start + seg.duration)}
                           </button>
                           <input

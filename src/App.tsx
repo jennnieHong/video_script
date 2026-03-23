@@ -2864,6 +2864,28 @@ function App() {
             player.seekTo(t, true);
           }
         }
+      } else if (e.shiftKey && (e.key === '<' || e.key === ',')) {
+        // Shift + < : 재생 속도 감소 (0.25씩, 최소 0.25)
+        e.preventDefault();
+        if (localMediaUrl && localVideoRef.current) {
+          localVideoRef.current.playbackRate = Math.max(0.25, localVideoRef.current.playbackRate - 0.25);
+        } else {
+          const player = loopPlayerRef.current;
+          if (player?.getPlaybackRate && player?.setPlaybackRate) {
+            player.setPlaybackRate(Math.max(0.25, player.getPlaybackRate() - 0.25));
+          }
+        }
+      } else if (e.shiftKey && (e.key === '>' || e.key === '.')) {
+        // Shift + > : 재생 속도 증가 (0.25씩, 최대 2.0)
+        e.preventDefault();
+        if (localMediaUrl && localVideoRef.current) {
+          localVideoRef.current.playbackRate = Math.min(2.0, localVideoRef.current.playbackRate + 0.25);
+        } else {
+          const player = loopPlayerRef.current;
+          if (player?.getPlaybackRate && player?.setPlaybackRate) {
+            player.setPlaybackRate(Math.min(2.0, player.getPlaybackRate() + 0.25));
+          }
+        }
       }
     };
     document.addEventListener('keydown', handler);

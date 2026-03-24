@@ -6264,7 +6264,7 @@ function App() {
                             virtualizer.measureElement(el);
                           }}
                           data-index={i}
-                          className={`transcript-seg${isHit ? ' hit' : ''}`}
+                          className={`transcript-seg${isHit ? ' hit' : ''}${activeSegIdxRef.current === i ? ' active' : ''}`}
                           style={{
                             position: 'absolute',
                             top: 0,

@@ -2888,9 +2888,24 @@ function App() {
         }
       }
     };
-    document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
+    // window 레벨 캡처 단계에서 등록 → iframe에 포커스가 있어도 키 이벤트 수신
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
   }, [localMediaUrl, setInMark, setOutMark, addManualSegment, cutSegment]);
+
+  // ── YouTube iframe이 포커스를 가져갈 때 body로 되돌리기 ──────────
+  useEffect(() => {
+    const reclaim = () => {
+      // window가 blur 되면 iframe에 포커스가 간 것 → 100ms 후 회수
+      setTimeout(() => {
+        if (document.activeElement?.tagName === 'IFRAME') {
+          (document.activeElement as HTMLElement).blur();
+        }
+      }, 100);
+    };
+    window.addEventListener('blur', reclaim);
+    return () => window.removeEventListener('blur', reclaim);
+  }, []);
 
   // ─── 탭 전환 시 URL 입력창 자동 포커스 ───────────────────────
   useEffect(() => {

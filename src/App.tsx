@@ -483,8 +483,17 @@ function App() {
           detached = true;
           const saved = lastFloatSizeRef.current;
           const r = d.originRect;
-          const w = saved ? saved.w : (r ? r.width : 640);
-          const h = saved ? saved.h : (r ? r.height : 360);
+          let w: number, h: number;
+          if (saved) {
+            w = saved.w;
+            h = saved.h;
+          } else {
+            // 영상 비율에 맞는 크기 (기본 너비 480px)
+            const vid = localVideoRef.current;
+            const ratio = vid && vid.videoWidth > 0 ? vid.videoHeight / vid.videoWidth : 9 / 16;
+            w = 480;
+            h = Math.round(w * ratio);
+          }
           floatPosX = ev.clientX - w / 2;
           floatPosY = ev.clientY - 16;
           floatStartX = ev.clientX;
@@ -560,9 +569,9 @@ function App() {
     const startPos = { ...floatingVideoPos };
     floatingResizeRef.current = { startX: e.clientX, startY: e.clientY, startW: floatingVideoPos.w, startH: floatingVideoPos.h, dir };
     document.body.style.cursor =
-      dir === 'se' ? 'nwse-resize' : dir === 'sw' ? 'nesw-resize' :
-      dir === 'e' ? 'ew-resize' : dir === 'w' ? 'ew-resize' :
-      dir === 's' ? 'ns-resize' : 'nwse-resize';
+      dir === 'se' || dir === 'nw' ? 'nwse-resize' : dir === 'sw' || dir === 'ne' ? 'nesw-resize' :
+      dir === 'e' || dir === 'w' ? 'ew-resize' :
+      dir === 's' || dir === 'n' ? 'ns-resize' : 'nwse-resize';
     document.body.style.userSelect = 'none';
     document.body.classList.add('is-resizing');
 
@@ -573,6 +582,7 @@ function App() {
       const dy = ev.clientY - r.startY;
 
       let newX = startPos.x;
+      let newY = startPos.y;
       let newW = startPos.w;
       let newH = startPos.h;
 
@@ -586,8 +596,12 @@ function App() {
       if (dir.includes('s')) {
         newH = Math.max(180, r.startH + dy);
       }
+      if (dir.includes('n')) {
+        newH = Math.max(180, r.startH - dy);
+        newY = startPos.y + (r.startH - newH);
+      }
 
-      setFloatingVideoPos(prev => ({ ...prev, x: newX, w: newW, h: newH }));
+      setFloatingVideoPos(prev => ({ ...prev, x: newX, y: newY, w: newW, h: newH }));
     };
     const onUp = () => {
       floatingResizeRef.current = null;
@@ -4903,6 +4917,8 @@ function App() {
                     <div className="floating-resize floating-resize-w" onMouseDown={handleFloatingResize('w')} />
                     <div className="floating-resize floating-resize-se" onMouseDown={handleFloatingResize('se')} />
                     <div className="floating-resize floating-resize-sw" onMouseDown={handleFloatingResize('sw')} />
+                    <div className="floating-resize floating-resize-ne" onMouseDown={handleFloatingResize('ne')} />
+                    <div className="floating-resize floating-resize-nw" onMouseDown={handleFloatingResize('nw')} />
                   </>
                 )}
               </div>

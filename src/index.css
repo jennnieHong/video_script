@@ -2453,6 +2453,22 @@ input.seg-edit-text:focus {
   cursor: nesw-resize;
 }
 
+.floating-resize-ne {
+  top: -3px;
+  right: -3px;
+  width: 14px;
+  height: 14px;
+  cursor: nesw-resize;
+}
+
+.floating-resize-nw {
+  top: -3px;
+  left: -3px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
 /* 리사이즈 핸들 호버 시 시각 피드백 */
 .floating-resize:hover {
   background: rgba(99, 102, 241, 0.2);

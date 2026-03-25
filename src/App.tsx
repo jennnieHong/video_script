@@ -925,12 +925,21 @@ function App() {
     programmaticScrollRef.current = false;
     if (wheelTimeoutRef.current) clearTimeout(wheelTimeoutRef.current);
     wheelTimeoutRef.current = setTimeout(() => { userScrollingRef.current = false; }, 500);
+    // 고정 위치 모드에서 사용자 스크롤 시 자동 스크롤 OFF
+    if (scrollAnchorRef.current !== 'natural' && isAutoScrollRef.current) {
+      isAutoScrollRef.current = false;
+      setIsAutoScroll(false);
+    }
   }, []);
 
   // 자동 스크롤 자동켜기: 새 재생 구간 설정 시 자동 스크롤을 다시 ON
   const [autoScrollReEnable, setAutoScrollReEnable] = useState(true);  // 새 구간 재생 시 자동 스크롤을 다시 ON 할지 여부
   const autoScrollReEnableRef = useRef(true);                          // 동기 참조 (useEffect 내에서 즉시 읽기)
   const [reEnableTrigger, setReEnableTrigger] = useState(0);           // 재생 액션 발생 카운터 (변경 시 자동스크롤 재활성화 트리거)
+  // 자동 스크롤 고정 위치: 'natural'(화면 벗어날 때만 스크롤) 또는 0~100(대본 영역의 %위치에 고정)
+  const [scrollAnchor, setScrollAnchor] = useState<'natural' | number>('natural');
+  const scrollAnchorRef = useRef<'natural' | number>('natural');
+  scrollAnchorRef.current = scrollAnchor;
 
   // loopConfig 변경 OR 지점재생 클릭 시 자동 스크롤 재활성화
   useEffect(() => {
@@ -2643,28 +2652,58 @@ function App() {
         // updateActiveSegDom이 내부에서 prev !== newIdx일 때만 처리하므로
         // 여기서는 found가 바뀌었을 때만 스크롤 (매 tick 호출 방지)
         const segChanged = activeSegIdxRef.current !== found;
-        updateActiveSegDom(found);
         if (isAutoScrollRef.current && !userScrollingRef.current && segChanged) {
-          // 가상화 환경: 화면 밖 세그먼트는 DOM에 없어 segEl이 null → 확실히 화면 밖
-          let inView = false;
-          const segEl = segmentRefs.current[found];
-          const scrollEl = transcriptScrollRef.current;
-          if (segEl && scrollEl) {
-            const segRect = segEl.getBoundingClientRect();
-            const scrollRect = scrollEl.getBoundingClientRect();
-            inView = segRect.top >= scrollRect.top && segRect.bottom <= scrollRect.bottom;
-          }
-          if (!inView) {
+          const anchor = scrollAnchorRef.current;
+          const scrollIdx = displaySegMap ? displaySegMap.indexOf(found) : found;
+
+          if (anchor !== 'natural' && scrollIdx >= 0) {
+            // 고정 위치 모드: 스크롤 먼저 → active 적용 (배경 고정 효과)
             programmaticScrollRef.current = true;
-            const scrollIdx = displaySegMap ? displaySegMap.indexOf(found) : found;
-            if (scrollIdx >= 0) virtualizer.scrollToIndex(scrollIdx, { align: 'center', behavior: 'auto' });
-            setTimeout(() => { programmaticScrollRef.current = false; }, 100);
+            const sEl = transcriptScrollRef.current;
+            const items = virtualizer.getVirtualItems();
+            const targetItem = items.find(vi => vi.index === scrollIdx);
+
+            if (targetItem && sEl) {
+              const containerH = sEl.clientHeight;
+              const anchorPx = containerH * (anchor / 100);
+              sEl.scrollTop = Math.max(0, targetItem.start - anchorPx);
+            } else {
+              virtualizer.scrollToIndex(scrollIdx, { align: 'center', behavior: 'auto' });
+            }
+            // 스크롤 후 active 적용
+            updateActiveSegDom(found);
+            setTimeout(() => { programmaticScrollRef.current = false; }, 50);
+          } else {
+            // natural 모드: 기존 순서 (active 먼저, 스크롤 후)
+            updateActiveSegDom(found);
+            if (anchor === 'natural') {
+              let inView = false;
+              const segEl = segmentRefs.current[found];
+              const scrollEl = transcriptScrollRef.current;
+              if (segEl && scrollEl) {
+                const segRect = segEl.getBoundingClientRect();
+                const scrollRect = scrollEl.getBoundingClientRect();
+                inView = segRect.top >= scrollRect.top && segRect.bottom <= scrollRect.bottom;
+              }
+              if (!inView && scrollIdx >= 0) {
+                programmaticScrollRef.current = true;
+                virtualizer.scrollToIndex(scrollIdx, { align: 'center', behavior: 'smooth' });
+                setTimeout(() => { programmaticScrollRef.current = false; }, 350);
+              }
+            }
           }
+        } else {
+          updateActiveSegDom(found);
         }
       }
     }, 50);
     return () => clearInterval(timer);
   }, [segments, isTrackingMode, dragStartIdx, trackingOffset, updateActiveSegDom, loopConfig, getCurrentTime, localMediaUrl]);
+
+
+
+  // rAF 스크롤 활성 플래그 (scroll 이벤트에서 rAF의 scrollTop 변경을 무시하기 위해)
+  const rafScrollActiveRef = useRef(false);
 
   // 휠/스크롤바 모두 통합 감지: scroll 이벤트는 위치 변경 후 발생 → 정확한 가시성 체크
   useEffect(() => {
@@ -2673,16 +2712,29 @@ function App() {
     const onScroll = () => {
       if (!isAutoScrollRef.current) return;
       if (programmaticScrollRef.current) return;
-      // 사용자 스크롤 감지 → scrollIntoView 억제 (wheelTimeoutRef 공유)
+      if (rafScrollActiveRef.current) return;
+      // 사용자 스크롤 감지 (스크롤바 드래그 포함)
       userScrollingRef.current = true;
       programmaticScrollRef.current = false;
       if (wheelTimeoutRef.current) clearTimeout(wheelTimeoutRef.current);
       wheelTimeoutRef.current = setTimeout(() => { userScrollingRef.current = false; }, 500);
-      // 즉시 가시성 체크
+
+      // 고정 위치 모드: 사용자 스크롤 시 즉시 auto-scroll OFF
+      if (scrollAnchorRef.current !== 'natural') {
+        isAutoScrollRef.current = false;
+        setIsAutoScroll(false);
+        return;
+      }
+
+      // natural 모드: active 세그먼트가 화면 밖이면 auto-scroll OFF
       const idx = activeSegIdxRef.current;
       if (idx < 0) return;
       const segEl = segmentRefs.current[idx];
-      if (!segEl) return;
+      if (!segEl) {
+        isAutoScrollRef.current = false;
+        setIsAutoScroll(false);
+        return;
+      }
       const segRect = segEl.getBoundingClientRect();
       const scrollRect = scrollEl.getBoundingClientRect();
       if (segRect.bottom < scrollRect.top || segRect.top > scrollRect.bottom) {
@@ -2975,6 +3027,8 @@ function App() {
     estimateSize: () => 38, // min-height 2.4rem ≈ 38px
     overscan: 10,
   });
+
+
 
   // ─── 편집 모드: 키보드 네비게이션 ─────────────────────────────
   /** 특정 세그먼트의 편집 input으로 포커스 이동 (가상 스크롤 대응) */
@@ -4065,6 +4119,43 @@ function App() {
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>
+              {/* 스크롤 고정 위치 옵션 (자동 스크롤 ON일 때) */}
+              <AnimatePresence>
+                {isAutoScroll && (
+                  <motion.div
+                    key="scroll-anchor-opts"
+                    initial={{ opacity: 0, height: 0 }}
+                    animate={{ opacity: 1, height: 'auto' }}
+                    exit={{ opacity: 0, height: 0 }}
+                    style={{ overflow: 'hidden', marginLeft: '1.2rem', borderLeft: '2px solid var(--brand)', paddingLeft: '0.6rem', paddingBottom: '0.3rem' }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.3rem 0' }}>
+                      <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', flexShrink: 0 }}>고정 위치</span>
+                      <select
+                        value={scrollAnchor === 'natural' ? 'natural' : String(scrollAnchor)}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          const val = v === 'natural' ? 'natural' as const : Number(v);
+                          setScrollAnchor(val);
+                          scrollAnchorRef.current = val;
+                          e.target.blur(); // 선택 후 포커스 해제 → 글로벌 단축키 바로 동작
+                        }}
+                        style={{
+                          flex: 1, fontSize: '0.78rem', padding: '0.25rem 0.4rem',
+                          background: '#1e1e2e', color: '#e0e0e0', border: '1px solid var(--border)',
+                          borderRadius: '4px', cursor: 'pointer',
+                        }}
+                      >
+                        <option value="natural" style={{ background: '#1e1e2e', color: '#e0e0e0' }}>자연스럽게 (화면 밖일 때만)</option>
+                        <option value="10" style={{ background: '#1e1e2e', color: '#e0e0e0' }}>상단 10%</option>
+                        <option value="30" style={{ background: '#1e1e2e', color: '#e0e0e0' }}>상단 30%</option>
+                        <option value="50" style={{ background: '#1e1e2e', color: '#e0e0e0' }}>중앙 50%</option>
+                        <option value="70" style={{ background: '#1e1e2e', color: '#e0e0e0' }}>하단 70%</option>
+                      </select>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
               <AnimatePresence>
                 {isTrackingMode && (
                   <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden' }} className="sync-adjust-bar">
@@ -6204,7 +6295,7 @@ function App() {
               {/* 자막 — 세그먼트별 렌더링 (하이라이트 + 재생 위치 추적) */}
               <div 
                 ref={transcriptScrollRef}
-                className={`transcript-scroll${isDragMode ? ' drag-mode' : ''}${isSeekMode ? ' seek-mode' : ''}${loopMode ? ' loop-mode' : ''}${showTranslation ? ' show-translation' : ''}${isEditMode ? ' edit-mode' : ''}`}
+                className={`transcript-scroll${isDragMode ? ' drag-mode' : ''}${isSeekMode ? ' seek-mode' : ''}${loopMode ? ' loop-mode' : ''}${showTranslation ? ' show-translation' : ''}${isEditMode ? ' edit-mode' : ''}${scrollAnchor !== 'natural' && isAutoScroll ? ' anchor-mode' : ''}`}
                 onMouseUp={handleDragEnd}
                 onMouseLeave={handleDragEnd}
                 onWheel={handleTranscriptWheel}

@@ -1802,7 +1802,7 @@ body.is-resizing video {
   gap: 0.5rem;
   padding: 0.45rem 0.5rem;
   border-radius: var(--radius-sm);
-  transition: background 0.12s;
+  transition: border-color 0.12s;
   border-left: 2px solid transparent;
   min-height: 2.4rem;
 }
@@ -1833,6 +1833,7 @@ body.is-resizing video {
   background: rgba(99, 102, 241, 0.14) !important;
   border-left-color: var(--brand-light);
 }
+
 
 .transcript-seg.active .seg-text {
   color: var(--text-primary);

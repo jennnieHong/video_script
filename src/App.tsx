@@ -2757,8 +2757,13 @@ function App() {
       }
     };
     scrollEl.addEventListener('scroll', onScroll, { passive: true });
-    return () => scrollEl.removeEventListener('scroll', onScroll);
-  }, [segments.length]);
+    // wheel 이벤트도 passive로 등록 (React onWheel은 non-passive → 스크롤 지연)
+    scrollEl.addEventListener('wheel', handleTranscriptWheel, { passive: true });
+    return () => {
+      scrollEl.removeEventListener('scroll', onScroll);
+      scrollEl.removeEventListener('wheel', handleTranscriptWheel);
+    };
+  }, [segments.length, handleTranscriptWheel]);
 
   // ─── 다중 구간 순차 재생 ──────────────────────────────────────
   // gapTimerRef / isInGapRef: 구간 간격 대기 상태 관리
@@ -6352,7 +6357,7 @@ function App() {
                 className={`transcript-scroll${isDragMode ? ' drag-mode' : ''}${isSeekMode ? ' seek-mode' : ''}${loopMode ? ' loop-mode' : ''}${showTranslation ? ' show-translation' : ''}${isEditMode ? ' edit-mode' : ''}${scrollAnchor !== 'natural' && isAutoScroll ? ' anchor-mode' : ''}`}
                 onMouseUp={handleDragEnd}
                 onMouseLeave={handleDragEnd}
-                onWheel={handleTranscriptWheel}
+
               >
                 {segments.length === 0 ? (
                   <p className="transcript-text">{transcript}</p>

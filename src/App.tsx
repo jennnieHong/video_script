@@ -4112,7 +4112,45 @@ function App() {
                   <div className="toggle-track" /><div className="toggle-thumb" />
                 </div>
               </div>
-              <div className={`mode-toggle-bar ${isAutoScroll ? 'active' : ''}${isEditMode ? ' disabled' : ''}`} onClick={() => { if (isEditMode) return; setIsAutoScroll(v => !v); isAutoScrollRef.current = !isAutoScrollRef.current; }} style={isEditMode ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
+              <div className={`mode-toggle-bar ${isAutoScroll ? 'active' : ''}${isEditMode ? ' disabled' : ''}`} onClick={() => {
+                if (isEditMode) return;
+                const newVal = !isAutoScrollRef.current;
+                setIsAutoScroll(newVal);
+                isAutoScrollRef.current = newVal;
+                // ON으로 전환 시: 즉시 현재 재생 위치로 스크롤 + active 표시
+                if (newVal && segments.length > 0) {
+                  programmaticScrollRef.current = true;
+                  const t = getCurrentTime() + trackingOffset;
+                  if (t >= 0) {
+                    let found = -1;
+                    for (let i = segments.length - 1; i >= 0; i--) {
+                      if (segments[i].start <= t) { found = i; break; }
+                    }
+                    if (found >= 0) {
+                      updateActiveSegDom(found);
+                      const scrollIdx = displaySegMap ? displaySegMap.indexOf(found) : found;
+                      if (scrollIdx >= 0) {
+                        const anchor = scrollAnchorRef.current;
+                        if (anchor !== 'natural') {
+                          const sEl = transcriptScrollRef.current;
+                          const items = virtualizer.getVirtualItems();
+                          const targetItem = items.find(vi => vi.index === scrollIdx);
+                          if (targetItem && sEl) {
+                            const containerH = sEl.clientHeight;
+                            const anchorPx = containerH * (anchor / 100);
+                            sEl.scrollTop = Math.max(0, targetItem.start - anchorPx);
+                          } else {
+                            virtualizer.scrollToIndex(scrollIdx, { align: 'center', behavior: 'auto' });
+                          }
+                        } else {
+                          virtualizer.scrollToIndex(scrollIdx, { align: 'center', behavior: 'smooth' });
+                        }
+                      }
+                    }
+                  }
+                  setTimeout(() => { programmaticScrollRef.current = false; }, 400);
+                }
+              }} style={isEditMode ? { opacity: 0.45, pointerEvents: 'none' } : undefined}>
                 <div className="mode-toggle-info">
                   <span className="mode-toggle-icon"><svg style={{ width: 14, height: 14 }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg></span>
                   <div className="mode-toggle-texts"><span className="mode-toggle-title">자동 스크롤</span><span className="mode-toggle-desc">{isEditMode ? '편집 모드에서 비활성' : '재생 위치로 자동 이동'}</span></div>

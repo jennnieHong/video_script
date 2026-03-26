@@ -3817,9 +3817,9 @@ function App() {
                 </div>
               </div>
 
-              {/* 구간 목록 + 설정 (다중 구간 모드 ON일 때) */}
+              {/* 구간 목록 + 설정 (모드 ON이거나 목록에 항목이 있을 때) */}
               <AnimatePresence>
-                {isMultiRangeMode && (
+                {(isMultiRangeMode || multiRanges.length > 0) && (
                   <motion.div
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: 'auto' }}

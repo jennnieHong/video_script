@@ -9,7 +9,7 @@
 //   5. 구간반복 모드: 검색 결과 클릭 시 해당 구간을 앱 내 플레이어로 반복 재생
 // ============================================================
 
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, Fragment } from 'react';
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, Fragment, startTransition } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 // lucide-react: 아이콘 라이브러리
 import { Youtube, Send, Copy, Download, Loader2, FileText, CheckCircle2, Search, Clock, RotateCcw } from 'lucide-react';
@@ -2743,6 +2743,7 @@ function App() {
   const rafScrollActiveRef = useRef(false);
 
   // 휠/스크롤바 모두 통합 감지: scroll 이벤트는 위치 변경 후 발생 → 정확한 가시성 체크
+  const scrollCheckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     const scrollEl = transcriptScrollRef.current;
     if (!scrollEl) return;
@@ -2750,41 +2751,48 @@ function App() {
       if (!isAutoScrollRef.current) return;
       if (programmaticScrollRef.current) return;
       if (rafScrollActiveRef.current) return;
-      // 사용자 스크롤 감지 (스크롤바 드래그 포함)
+
+      // 고정 위치 모드: 사용자 스크롤 시 즉시 auto-scroll OFF (getBoundingClientRect 불필요)
+      if (scrollAnchorRef.current !== 'natural') {
+        userScrollingRef.current = true;
+        isAutoScrollRef.current = false;
+        startTransition(() => {
+          setIsAutoScroll(false);
+        });
+        return;
+      }
+
+      // natural 모드: ref 업데이트만 즉시, 가시성 체크는 디바운스
       userScrollingRef.current = true;
-      programmaticScrollRef.current = false;
       if (wheelTimeoutRef.current) clearTimeout(wheelTimeoutRef.current);
       wheelTimeoutRef.current = setTimeout(() => { userScrollingRef.current = false; }, 500);
 
-      // 고정 위치 모드: 사용자 스크롤 시 즉시 auto-scroll OFF
-      if (scrollAnchorRef.current !== 'natural') {
-        isAutoScrollRef.current = false;
-        setIsAutoScroll(false);
-        return;
-      }
-
-      // natural 모드: active 세그먼트가 화면 밖이면 auto-scroll OFF
-      const idx = activeSegIdxRef.current;
-      if (idx < 0) return;
-      const segEl = segmentRefs.current[idx];
-      if (!segEl) {
-        isAutoScrollRef.current = false;
-        setIsAutoScroll(false);
-        return;
-      }
-      const segRect = segEl.getBoundingClientRect();
-      const scrollRect = scrollEl.getBoundingClientRect();
-      if (segRect.bottom < scrollRect.top || segRect.top > scrollRect.bottom) {
-        isAutoScrollRef.current = false;
-        setIsAutoScroll(false);
-      }
+      // 200ms 디바운스로 가시성 체크 (getBoundingClientRect 호출 최소화)
+      if (scrollCheckTimerRef.current) clearTimeout(scrollCheckTimerRef.current);
+      scrollCheckTimerRef.current = setTimeout(() => {
+        if (!isAutoScrollRef.current) return;
+        const idx = activeSegIdxRef.current;
+        if (idx < 0) return;
+        const segEl = segmentRefs.current[idx];
+        if (!segEl) {
+          isAutoScrollRef.current = false;
+          startTransition(() => setIsAutoScroll(false));
+          return;
+        }
+        const segRect = segEl.getBoundingClientRect();
+        const scrollRect = scrollEl.getBoundingClientRect();
+        if (segRect.bottom < scrollRect.top || segRect.top > scrollRect.bottom) {
+          isAutoScrollRef.current = false;
+          startTransition(() => setIsAutoScroll(false));
+        }
+      }, 200);
     };
     scrollEl.addEventListener('scroll', onScroll, { passive: true });
-    // wheel 이벤트도 passive로 등록 (React onWheel은 non-passive → 스크롤 지연)
     scrollEl.addEventListener('wheel', handleTranscriptWheel, { passive: true });
     return () => {
       scrollEl.removeEventListener('scroll', onScroll);
       scrollEl.removeEventListener('wheel', handleTranscriptWheel);
+      if (scrollCheckTimerRef.current) clearTimeout(scrollCheckTimerRef.current);
     };
   }, [segments.length, handleTranscriptWheel]);
 
@@ -3053,11 +3061,21 @@ function App() {
     count: displaySegMap ? displaySegMap.length : segments.length,
     getScrollElement: () => transcriptScrollRef.current,
     estimateSize: () => 38, // min-height 2.4rem ≈ 38px
-    overscan: 10,
+    overscan: 5,
   });
 
+  const measureElementRef = useRef(virtualizer.measureElement);
+  measureElementRef.current = virtualizer.measureElement;
 
-
+  // 스크롤 중 인라인 ref 생성으로 인한 잦은 getBoundingClientRect 호출(Reflow) 방지용 안정적 ref 콜백 배열
+  const segmentRefCallbacks = useMemo(() => {
+    return Array.from({ length: segments.length }, (_, i) => (el: HTMLDivElement | null) => {
+      segmentRefs.current[i] = el;
+      if (el) {
+        measureElementRef.current(el);
+      }
+    });
+  }, [segments.length]);
   // ─── 편집 모드: 키보드 네비게이션 ─────────────────────────────
   /** 특정 세그먼트의 편집 input으로 포커스 이동 (가상 스크롤 대응) */
   const focusEditInput = useCallback((targetSegIdx: number, cursorPos: number) => {
@@ -6439,18 +6457,18 @@ function App() {
                         );
                       });
                     })()}
-                    {virtualizer.getVirtualItems().map(virtualRow => {
+                    {(() => {
+                      const seekPinSet = new Set(seekPins.map(p => p.segIdx));
+                      return virtualizer.getVirtualItems().map(virtualRow => {
                       const i = displaySegMap ? displaySegMap[virtualRow.index] : virtualRow.index;
                       const seg = segments[i];
                       if (!seg) return null;
                       const isHit = hitSet.has(i);
+                      const hasPinIcon = seekPinSet.has(i);
                       return (
                         <div
                           key={i}
-                          ref={(el) => {
-                            segmentRefs.current[i] = el;
-                            virtualizer.measureElement(el);
-                          }}
+                          ref={segmentRefCallbacks[i]}
                           data-index={i}
                           className={`transcript-seg${isHit ? ' hit' : ''}${activeSegIdxRef.current === i ? ' active' : ''}`}
                           style={{
@@ -6492,7 +6510,7 @@ function App() {
                             onClick={(e) => { if (isSeekModeRef.current) e.stopPropagation(); openYouTubeAtTime(i, seg.start); }}
                             title={loopMode ? '클릭 → 이 세그먼트 재생' : '클릭 → YouTube에서 열기'}
                           >
-                            {seekPins.some(p => p.segIdx === i) && <span style={{ marginRight: '2px', fontSize: '0.65rem' }}>📌</span>}
+                            {hasPinIcon && <span style={{ marginRight: '2px', fontSize: '0.65rem' }}>📌</span>}
                             {formatTimestamp(seg.start)}<span className="seg-time-sep">~</span>{formatTimestamp(seg.start + seg.duration)}
                           </button>
                           <input
@@ -6543,7 +6561,8 @@ function App() {
                           />
                         </div>
                       );
-                    })}
+                    });
+                    })()}
                   </div>
                 )}
               </div>

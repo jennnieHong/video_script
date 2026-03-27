@@ -921,6 +921,29 @@ function App() {
   const [rangeGap, setRangeGap] = useState(1);                         // 다중 구간 사이 간격 (초)
   const [activeMultiRangeIdx, setActiveMultiRangeIdx] = useState(0);   // 다중 구간: 현재 재생 중인 구간 번호
   const [dragStartIdx, setDragStartIdx] = useState<number | null>(null); // 드래그 시작 세그먼트 인덱스 (null = 드래그 중 아님)
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);               // 재생 속도 (0.25~2.0)
+
+  // 재생 속도 변경 함수
+  const changePlaybackSpeed = useCallback((delta: number) => {
+    const newSpeed = Math.round(Math.max(0.25, Math.min(2.0, playbackSpeed + delta)) * 100) / 100;
+    setPlaybackSpeed(newSpeed);
+    if (localMediaUrl && localVideoRef.current) {
+      localVideoRef.current.playbackRate = newSpeed;
+    } else {
+      const player = loopPlayerRef.current;
+      if (player?.setPlaybackRate) player.setPlaybackRate(newSpeed);
+    }
+  }, [playbackSpeed, localMediaUrl]);
+
+  const setPlaybackSpeedDirect = useCallback((speed: number) => {
+    setPlaybackSpeed(speed);
+    if (localMediaUrl && localVideoRef.current) {
+      localVideoRef.current.playbackRate = speed;
+    } else {
+      const player = loopPlayerRef.current;
+      if (player?.setPlaybackRate) player.setPlaybackRate(speed);
+    }
+  }, [localMediaUrl]);
   // ref 동기화: state 업데이트 비동기 지연 없이 드래그 핸들러에서 즉시 읽기 위한 동기 참조
   const dragStartIdxRef   = useRef<number | null>(null);               // 드래그 시작 인덱스 동기 참조
   const dragCurrentIdxRef = useRef<number | null>(null);               // 드래그 현재 인덱스 동기 참조
@@ -2936,33 +2959,19 @@ function App() {
           }
         }
       } else if (e.shiftKey && (e.key === '<' || e.key === ',')) {
-        // Shift + < : 재생 속도 감소 (0.25씩, 최소 0.25)
+        // Shift + < : 재생 속도 감소
         e.preventDefault();
-        if (localMediaUrl && localVideoRef.current) {
-          localVideoRef.current.playbackRate = Math.max(0.25, localVideoRef.current.playbackRate - 0.25);
-        } else {
-          const player = loopPlayerRef.current;
-          if (player?.getPlaybackRate && player?.setPlaybackRate) {
-            player.setPlaybackRate(Math.max(0.25, player.getPlaybackRate() - 0.25));
-          }
-        }
+        changePlaybackSpeed(-0.25);
       } else if (e.shiftKey && (e.key === '>' || e.key === '.')) {
-        // Shift + > : 재생 속도 증가 (0.25씩, 최대 2.0)
+        // Shift + > : 재생 속도 증가
         e.preventDefault();
-        if (localMediaUrl && localVideoRef.current) {
-          localVideoRef.current.playbackRate = Math.min(2.0, localVideoRef.current.playbackRate + 0.25);
-        } else {
-          const player = loopPlayerRef.current;
-          if (player?.getPlaybackRate && player?.setPlaybackRate) {
-            player.setPlaybackRate(Math.min(2.0, player.getPlaybackRate() + 0.25));
-          }
-        }
+        changePlaybackSpeed(0.25);
       }
     };
     // window 레벨 캡처 단계에서 등록 → iframe에 포커스가 있어도 키 이벤트 수신
     window.addEventListener('keydown', handler, true);
     return () => window.removeEventListener('keydown', handler, true);
-  }, [localMediaUrl, setInMark, setOutMark, addManualSegment, cutSegment]);
+  }, [localMediaUrl, setInMark, setOutMark, addManualSegment, cutSegment, changePlaybackSpeed]);
 
   // ── YouTube iframe이 포커스를 가져갈 때 body로 되돌리기 ──────────
   useEffect(() => {
@@ -4226,6 +4235,35 @@ function App() {
                       <input type="range" min="-3" max="3" step="0.1" value={trackingOffset} onChange={(e) => setTrackingOffset(parseFloat(e.target.value))} className="sync-slider" />
                       <button className="sync-btn" onClick={() => setTrackingOffset(prev => prev + 0.1)}>+</button>
                       <button className="sync-reset" onClick={() => setTrackingOffset(0.3)}>초기화</button>
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+              <AnimatePresence>
+                {isTrackingMode && (
+                  <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden' }} className="sync-adjust-bar">
+                    <div className="sync-info">
+                      <svg style={{ width: 12, height: 12, color: 'var(--brand-light)' }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                      <span className="sync-label">재생 속도</span>
+                      <span className="sync-value">{playbackSpeed}x</span>
+                    </div>
+                    <div className="sync-controls" style={{ gap: '0.25rem' }}>
+                      <button className="sync-btn" onClick={() => changePlaybackSpeed(-0.25)} title="Shift+<">◀</button>
+                      {[0.5, 0.75, 1, 1.25, 1.5, 2].map(s => (
+                        <button
+                          key={s}
+                          className={`sync-btn${playbackSpeed === s ? ' active' : ''}`}
+                          style={{
+                            padding: '0.15rem 0.35rem',
+                            fontSize: '0.68rem',
+                            ...(playbackSpeed === s ? { background: 'var(--brand)', color: '#fff', borderColor: 'var(--brand)' } : {}),
+                          }}
+                          onClick={() => setPlaybackSpeedDirect(s)}
+                        >
+                          {s}x
+                        </button>
+                      ))}
+                      <button className="sync-btn" onClick={() => changePlaybackSpeed(0.25)} title="Shift+>">▶</button>
                     </div>
                   </motion.div>
                 )}

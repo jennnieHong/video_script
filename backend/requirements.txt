@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+python-multipart
+youtube-transcript-api
+yt-dlp
+pydantic
+starlette
